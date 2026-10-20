@@ -815,8 +815,11 @@ class TeammatesService:
             if not reply['ok'] and reply['error'] == 'resume_unavailable':
                 skipped, reply = reply['message'], None
         if reply is None:
+            # Keep the spawn's toolset narrowing: a digest follow-up must not widen what the run was allowed.
+            narrowed = (json.loads(row['launch_json']) if row.get('launch_json') else {}).get('allowed_toolsets')
             with _admission_locks[stripe]:
                 reply = self._assign(session_id, row['teammate'], message, None, True, None, parent_agent,
+                                     toolsets=list(narrowed) if narrowed else None,
                                      extra={'parent_run_id': run_id, 'followup_mode': 'digest'})
             if reply.get('ok'):
                 reply = dict(reply, followup_mode='digest', parent_run_id=run_id, resume_skipped=skipped)
@@ -856,21 +859,24 @@ class TeammatesService:
         try:
             messages, system_prompt = self._transcript_for(row, parent)
             handle = self.host.start_resume(parent=parent, launch=launch, model=row['model'],
-                                            provider=launch.get('provider'), transcript=messages,
-                                            system_prompt=system_prompt, message=message, run_id=run_id)
+                                            provider=launch.get('provider'), expected_provider=row['provider'],
+                                            transcript=messages, system_prompt=system_prompt, message=message,
+                                            run_id=run_id)
         except ResumeUnavailable as exc:
             return error('resume_unavailable', clip(exc, 1000))
         except Exception as exc:
             return error('resume_unavailable', f'{type(exc).__name__}: {clip(exc, 1000)}')
-        new_row = dict(run_id=run_id, teammate=teammate, owner_session_id=session_id, goal=message, status='running',
-                       subagent_id=handle.subagent_id, handle_json=json.dumps(handle_dict(handle)),
-                       provider=handle.provider, model=handle.model, requested_route=row['requested_route'],
-                       requested_effort=row['requested_effort'], unsupported=row['unsupported'] or '[]',
-                       instance_id=INSTANCE_ID, pid=os.getpid(), parent_session_key=self.host.completion_target()[0],
-                       created_at=self.clock(), role_hash=row['role_hash'], parent_run_id=row['run_id'],
-                       followup_mode='resume', launch_json=row['launch_json'], child_session_id=handle.child_session_id,
-                       kanban_task=None, kanban_claim=None)
-        try:
+        new_row = None
+        try:  # the child is already submitted: any failure from here on must cancel it
+            new_row = dict(run_id=run_id, teammate=teammate, owner_session_id=session_id, goal=message,
+                           status='running', subagent_id=handle.subagent_id, handle_json=json.dumps(handle_dict(handle)),
+                           provider=handle.provider, model=handle.model, requested_route=row['requested_route'],
+                           requested_effort=row['requested_effort'], unsupported=row['unsupported'] or '[]',
+                           instance_id=INSTANCE_ID, pid=os.getpid(),
+                           parent_session_key=self.host.completion_target()[0], created_at=self.clock(),
+                           role_hash=row['role_hash'], parent_run_id=row['run_id'], followup_mode='resume',
+                           launch_json=row['launch_json'], child_session_id=handle.child_session_id,
+                           kanban_task=None, kanban_claim=None)
             with self.store_factory() as store:
                 admitted = store.admit(new_row, config['max_live_runs'])
             if not admitted:
@@ -879,7 +885,7 @@ class TeammatesService:
             self._owners[run_id] = session_id
             self.start_monitor(new_row, handle, None)
         except Exception as exc:
-            return self._launch_failed(run_id, handle, None, None, exc)
+            return self._launch_failed(run_id, handle, None, None, exc, row=new_row)
         reply = {key: value for key, value in public_row(new_row).items()
                  if key in {'ok', 'run_id', 'teammate', 'status', 'provider', 'model', 'unsupported'}}
         return dict(reply, followup_mode='resume', parent_run_id=row['run_id'])

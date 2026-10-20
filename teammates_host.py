@@ -4,7 +4,7 @@ from dataclasses import fields
 import json
 import os
 
-from .teammates_resume import HermesInternals, ResumeHandle, ResumeRunner, RoutingLifecycle
+from .teammates_resume import HermesInternals, ResumeHandle, RoutingLifecycle, shared_runner
 
 
 def lifecycle(ctx):
@@ -40,6 +40,8 @@ def load_roster_file(path, home=None):
     if key is None:
         return {}, f"roster_file: {target} needs a top-level 'models' mapping", str(target)
     extra = sorted(str(name) for name in data if name not in ('models', 'teammates'))
+    if 'models' in data and 'teammates' in data:
+        extra.append("teammates (ignored because 'models' is set)")
     error = f"roster_file: {target} has unknown top-level key(s): {', '.join(extra)}" if extra else None
     return data[key], error, str(target)
 
@@ -53,7 +55,7 @@ class HermesHost:
         self.ctx = ctx
         self.token_receipts = False
         self.isolated = os.environ.get('HERMES_PLUGIN_HOST_PROCESS', '').strip().lower() not in ('', '0', 'false')
-        self.resume_runner = ResumeRunner()
+        self.resume_runner = shared_runner()
         try:
             from hermes_cli import kanban_db
             from hermes_cli.kanban_db_connect import connect
@@ -105,10 +107,11 @@ class HermesHost:
         """Seconds a child's prompt cache stays warm, or None when caching is off. Hermes clamps every
         delegated child to the 5-minute tier (delegate_tool._apply_child_cache_ttl), whatever the global TTL."""
         try:
-            from agent.agent_runtime_helpers import configured_cache_ttl
+            from agent.agent_runtime_helpers import prompt_caching_disabled_from_config
         except ImportError:
             return 300
-        return 300 if configured_cache_ttl() else None
+        # Not configured_cache_ttl(): it is None for 'auto' and unknown values, which keep caching on.
+        return None if prompt_caching_disabled_from_config() else 300
 
     def launch_request(self, **kwargs):
         return self.request_class()(**kwargs)

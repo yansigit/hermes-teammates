@@ -30,10 +30,11 @@ SPECS = {
          'wait_seconds': _WAIT},
         ['model', 'goal']),
     'subagent_followup': (
-        'Continue a finished subagent run with a new message, for example a fix after its first answer. The '
-        'subagent resumes its earlier conversation on the same model, so it keeps what it already read and, '
-        'soon after the run, reuses the prompt cache. Returns a new run_id. For a run still working, use '
-        'subagent_steer.',
+        'Continue a finished subagent run with a new message, for example a fix after its first answer. When '
+        'possible the subagent resumes its earlier conversation on the same model, keeping what it already read '
+        'and reusing the prompt cache; otherwise a fresh subagent gets a digest of earlier results. The reply\'s '
+        'followup_mode says which (resume_skipped says why not). Returns a new run_id. For a run still working, '
+        'use subagent_steer.',
         {'run_id': _p('string', 'The run to continue; pass the latest run_id of that subagent.'),
          'message': _p('string', 'What to do next, at most 12000 characters.'),
          'wait_seconds': _WAIT},

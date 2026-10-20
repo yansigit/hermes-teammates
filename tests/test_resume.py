@@ -19,6 +19,10 @@ class FakeChild:
         self._cached_system_prompt = None
         self.calls = []
         self.gate = None
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def run_conversation(self, user_message=None, conversation_history=None, **kwargs):
         self.calls.append(dict(user_message=user_message, conversation_history=conversation_history,
@@ -35,13 +39,14 @@ class FakeChild:
 class FakeInternals:
     def __init__(self):
         self.builds, self.children, self.steers, self.interrupts, self.loads = [], [], [], [], []
-        self.resolved_model = None
+        self.interrupted_children = []
+        self.resolved_model = self.resolved_provider = None
         self.transcript = (TRANSCRIPT, SYSTEM)
         self.gate = None
 
     def build_child(self, parent, launch, model, provider):
         self.builds.append(dict(launch=launch, model=model, provider=provider))
-        child = FakeChild(f'sa-resume-{len(self.builds)}', self.resolved_model or model, provider,
+        child = FakeChild(f'sa-resume-{len(self.builds)}', self.resolved_model or model, self.resolved_provider or provider,
                           f'child-session-{len(self.builds)}')
         child.gate = self.gate
         self.children.append(child)
@@ -55,11 +60,15 @@ class FakeInternals:
         self.steers.append((subagent_id, text))
         return True
 
-    def interrupt(self, subagent_id):
-        self.interrupts.append(subagent_id)
+    def interrupt(self, child, reason=''):
+        self.interrupts.append(child._subagent_id)
+        self.interrupted_children.append(child)
         if self.gate is not None:
             self.gate.set()
         return True
+
+    def discard(self, child):
+        child.close()
 
     def load_transcript(self, parent, child_session_id):
         self.loads.append(child_session_id)
@@ -294,3 +303,166 @@ def test_steer_and_stop_route_to_a_resumed_run(resume_rig):
     assert rig.service.stop('owner', reply['run_id'], 'enough')['ok'] is True
     assert rig.internals.interrupts
     assert wait_done(rig, reply['run_id'])['status'] == 'cancelled'
+
+
+# --- Review fixes ---------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize('ttl,expected', [('auto', 300), ('5m', 300), ('1h', 300), ('off', None), (False, None)])
+def test_cache_window_follows_hermes_caching_switch(rig, monkeypatch, ttl, expected):
+    from agent import agent_runtime_helpers
+    from hermes_teammates.teammates_host import HermesHost
+    monkeypatch.setattr(agent_runtime_helpers, '_raw_cache_ttl_from_config', lambda default: ttl)
+    assert HermesHost.cache_ttl_seconds() == expected
+
+
+def test_cancel_after_completion_keeps_the_terminal_state():
+    from hermes_teammates.teammates_resume import ResumeRunner
+    runner = ResumeRunner(FakeInternals())
+    handle = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                          system_prompt=SYSTEM, message='x', run_id='r')
+    assert runner.wait(handle, timeout_seconds=5).state == 'SUCCEEDED'
+    assert runner.cancel(handle, reason='late').accepted is False
+    waited = runner.wait(handle, timeout_seconds=0)
+    assert waited.state == 'SUCCEEDED' and waited.timed_out is False
+
+
+def test_cancel_of_a_queued_resume_never_runs_the_child():
+    from hermes_teammates.teammates_resume import ResumeRunner
+    internals = FakeInternals()
+    internals.gate = threading.Event()
+    runner = ResumeRunner(internals, max_workers=1)
+    busy = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                        system_prompt=SYSTEM, message='busy', run_id='r1')
+    queued = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                          system_prompt=SYSTEM, message='queued', run_id='r2')
+    assert runner.cancel(queued, reason='no').accepted is True
+    internals.gate.set()
+    assert runner.wait(busy, timeout_seconds=5).state == 'SUCCEEDED'
+    assert runner.wait(queued, timeout_seconds=5).state == 'CANCELLED'
+    assert internals.children[1].calls == [] and internals.children[1].closed
+
+
+def test_cancel_interrupts_the_child_object_itself():
+    from hermes_teammates.teammates_resume import ResumeRunner
+    internals = FakeInternals()
+    internals.gate = threading.Event()
+    runner = ResumeRunner(internals)
+    handle = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                          system_prompt=SYSTEM, message='x', run_id='r')
+    runner.cancel(handle, reason='stop')
+    assert internals.interrupted_children == [internals.children[0]]
+
+
+def test_resumed_children_run_on_daemon_threads_with_the_callers_context():
+    import contextvars
+    from hermes_teammates.teammates_resume import ResumeRunner
+    marker = contextvars.ContextVar('profile_marker', default='launch-profile')
+    seen = {}
+    internals = FakeInternals()
+    original = internals.run_child
+    def run_child(message, child, parent):
+        seen.update(profile=marker.get(), daemon=threading.current_thread().daemon)
+        return original(message, child, parent)
+    internals.run_child = run_child
+    runner = ResumeRunner(internals)
+    token = marker.set('profile-b')
+    try:
+        handle = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                              system_prompt=SYSTEM, message='x', run_id='r')
+    finally:
+        marker.reset(token)
+    runner.wait(handle, timeout_seconds=5)
+    assert seen == {'profile': 'profile-b', 'daemon': True}
+
+
+def test_history_is_replayed_only_on_the_first_turn():
+    from hermes_teammates.teammates_resume import ResumeRunner
+    internals = FakeInternals()
+    def run_child(message, child, parent):
+        child.run_conversation(user_message=message)
+        child.run_conversation(user_message='schema retry')  # Hermes's output-schema retry turn
+        return {'status': 'completed', 'summary': 'ok'}
+    internals.run_child = run_child
+    runner = ResumeRunner(internals)
+    handle = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                          system_prompt=SYSTEM, message='x', run_id='r')
+    runner.wait(handle, timeout_seconds=5)
+    first, retry = internals.children[0].calls
+    assert first['conversation_history'] == TRANSCRIPT and retry['conversation_history'] is None
+
+
+def test_refused_start_closes_the_rebuilt_child():
+    from hermes_teammates.teammates_resume import ResumeRunner, ResumeUnavailable
+    internals = FakeInternals()
+    internals.resolved_provider = 'other-provider'
+    with pytest.raises(ResumeUnavailable, match='other-provider'):
+        ResumeRunner(internals).start(parent=object(), launch={'goal': 'g'}, model='m', provider=None,
+                                      expected_provider='anthropic', transcript=TRANSCRIPT, system_prompt=SYSTEM,
+                                      message='x', run_id='r')
+    assert internals.children[0].closed
+
+
+def test_unknown_launch_keys_refuse_resume():
+    from hermes_teammates.teammates_resume import HermesInternals, ResumeUnavailable
+    with pytest.raises(ResumeUnavailable, match='reasoning_effort'):
+        HermesInternals().build_child(object(), {'goal': 'g', 'reasoning_effort': 'high'}, 'm', None)
+
+
+def test_provider_switch_since_the_run_falls_back_to_a_digest(resume_rig):
+    rig = resume_rig
+    run_id, _ = finished_run(rig)
+    rig.internals.resolved_provider = 'switched-provider'
+    reply = rig.service.followup('owner', run_id, 'x')
+    assert reply['ok'] and reply['followup_mode'] == 'digest', reply
+    assert 'switched-provider' in reply['resume_skipped']
+
+
+def test_digest_fallback_keeps_the_spawns_narrowed_toolsets(resume_rig):
+    rig = resume_rig
+    rig.raw['teammates']['worker']['toolsets'] = ['file', 'web']
+    rig.raw['followup_mode'] = 'digest'
+    from test_v020 import result
+    run_id = rig.service.assign('owner', 'worker', 'g', toolsets=['file'])['run_id']
+    rig.service.finalize(run_id, result(rig, run_id))
+    rig.lifecycle.state = 'RUNNING'
+    assert rig.service.followup('owner', run_id, 'x')['ok']
+    assert rig.lifecycle.requests[-1].allowed_toolsets == ('file',)
+
+
+def test_load_transcript_follows_the_compression_chain(monkeypatch):
+    import hermes_state_registry
+    from hermes_teammates.teammates_resume import HermesInternals
+    reads = []
+    class DB:
+        def resolve_resume_session_id(self, session_id):
+            return 'tip-after-compression' if session_id == 'original' else session_id
+        def get_messages_as_conversation(self, session_id, **kwargs):
+            reads.append(session_id)
+            return TRANSCRIPT
+        def get_session(self, session_id):
+            return {'system_prompt': f'prompt of {session_id}'}
+    monkeypatch.setattr(hermes_state_registry, 'acquire', lambda *a: DB())
+    monkeypatch.setattr(hermes_state_registry, 'release_or_close', lambda db: None)
+    parent = SimpleNamespace(_session_db=SimpleNamespace(db_path='x.db'))
+    messages, system = HermesInternals().load_transcript(parent, 'original')
+    assert reads == ['tip-after-compression'] and system == 'prompt of tip-after-compression'
+
+
+def test_runner_is_shared_across_plugin_reloads():
+    from hermes_teammates.teammates_host import HermesHost
+    assert HermesHost(SimpleNamespace()).resume_runner is HermesHost(SimpleNamespace()).resume_runner
+
+
+def test_roster_file_with_both_keys_reports_it(tmp_path):
+    from hermes_teammates.teammates_host import load_roster_file
+    path = tmp_path / 'roster.yaml'
+    path.write_text('models:\n  a: {}\nteammates:\n  b: {}\n', encoding='utf-8')
+    roster, problem, _ = load_roster_file(str(path))
+    assert roster == {'a': {}} and 'teammates' in problem
+
+
+def test_discard_closes(monkeypatch):
+    from hermes_teammates.teammates_resume import HermesInternals
+    child = FakeChild('sa', 'm', 'p', 's')
+    HermesInternals().discard(child)
+    assert child.closed
