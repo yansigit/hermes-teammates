@@ -2,7 +2,7 @@
 
 ## Reporting
 
-[Open a private security advisory](https://github.com/100yenadmin/hermes-teammates/security/advisories/new).
+[Open a private security advisory](https://github.com/yansigit/hermes-teammates/security/advisories/new).
 
 We aim to acknowledge reports within 3 business days and to share a decision or fix plan within 14 days.
 
@@ -23,14 +23,16 @@ Do not open a public issue for them.
 
 ## Model
 
-Hermes Teammates is an in-agent plugin. It adds six tools, one slash command and one read-only skill, and it runs
-subagents only through Hermes's public plugin lifecycle API (`ctx.subagent_lifecycle`). The skill
-(`teammates-report-problem`) has no code of its own: it guides the agent to draft a bug report, and the agent files it
-with `gh` only after the user approves that draft.
+hermes-subagents is an in-agent plugin (a fork of Hermes Teammates). It adds five tools and one slash command. It
+starts subagents through Hermes's public plugin lifecycle API (`ctx.subagent_lifecycle`). Resumed follow-ups rebuild
+a finished child with Hermes's own (private) child builder and run it through Hermes's own child runner, with the
+same credentials resolution, toolset checks and lifecycle hooks; that code is in `teammates_resume.py`.
 
-- **Who decides what a teammate is.** Teammates are defined by the operator in
-  `plugins.entries.hermes-teammates.settings`. The model can only pick a teammate by name. It cannot choose a
-  provider, model, route or reasoning level, or widen toolsets.
+- **Who decides what a subagent may be.** Roster entries are defined by the operator in
+  `plugins.entries.hermes-subagents.settings`. The model can only pick an entry by name. It cannot choose a
+  provider, model, route or reasoning level outside the roster, or widen toolsets (`subagent_spawn`'s `toolsets` only
+  narrow). A resumed follow-up reuses the run's recorded launch and model; it refuses to resume if the route now
+  resolves to a different model.
 - **Toolsets.**
   - A teammate's `toolsets` are passed to Hermes as `allowed_toolsets`.
   - Hermes rejects any set that would widen the parent's tools, and it keeps its own unsafe-tool block for every
@@ -47,9 +49,11 @@ with `gh` only after the user approves that draft.
   - An unknown run and another conversation's run return the same `unknown_run` error.
   - Hermes's lifecycle handles enforce the same rule independently.
 - **Data at rest.**
-  - The ledger is a SQLite file at `<HERMES_HOME>/plugin-data/hermes-teammates/data.db`, per profile.
-  - It holds each run's goal, status, summary or error (clipped), provider/model names and timestamps.
-  - It holds no transcripts, hidden reasoning or credentials.
+  - The ledger is a SQLite file at `<HERMES_HOME>/plugin-data/hermes-subagents/data.db`, per profile.
+  - It holds each run's goal, status, summary or error (clipped), provider/model names, timestamps, the launch
+    request (goal, context and toolsets, so a follow-up can rebuild the child) and the child session id.
+  - It holds no transcripts, hidden reasoning or credentials. Resumed conversations are kept in process memory
+    only; the first follow-up reads the child's transcript from Hermes's own session DB.
   - Remove the file to erase the history.
 - **Kanban.**
   - The plugin claims a card only if it is assigned to the configured lane, the lane is not a Hermes profile name,
@@ -74,7 +78,8 @@ with `gh` only after the user approves that draft.
   `write_file` and `patch`, so a teammate meant to only read can still edit files. Its instructions are not an
   enforcement boundary.
 - The plugin reads Hermes's Kanban database through `hermes_cli.kanban_db` and checks lane names against profiles
-  with a Hermes helper. It does not patch or wrap any Hermes function.
+  with a Hermes helper. It does not patch any Hermes module. For resume it wraps `run_conversation` on the child
+  instance it rebuilt (an instance attribute) to replay the earlier transcript.
 
 ## Completion notices
 

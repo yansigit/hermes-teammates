@@ -1,15 +1,13 @@
-# Shared plugin bug form. Field ids and labels are FROZEN across our plugin repos: the
-# report-a-problem skill drafts issues with these same headings, so do not rename them.
-# Per repo: description, the security line, the diagnostics hint, and the surface options.
+# Bug form for hermes-subagents (adapted from upstream hermes-teammates).
 name: Bug report
-description: Something in Hermes Teammates is broken or behaves unexpectedly.
+description: Something in hermes-subagents is broken or behaves unexpectedly.
 labels: ["bug", "triage-pending"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. Your Hermes agent can draft it for you: ask it to "report a problem with Hermes Teammates".
-        **Security problems** (toolset escapes, cross-profile access, or anything that exposes a secret) go to a [private advisory](https://github.com/100yenadmin/hermes-teammates/security/advisories/new), not here.
+        Thanks for the report. If the problem also happens with upstream hermes-teammates, report it there instead.
+        **Security problems** (toolset escapes, cross-profile access, or anything that exposes a secret) go to a [private advisory](https://github.com/yansigit/hermes-teammates/security/advisories/new), not here.
         **Problems in Hermes itself** belong in [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/issues).
   - type: textarea
     id: what_happened
@@ -37,7 +35,7 @@ body:
     id: plugin_version
     attributes:
       label: Plugin version
-      description: The hermes-teammates entry from `hermes plugins list --json` (version and source).
+      description: The hermes-subagents entry from `hermes plugins list --json` (version and source).
     validations:
       required: true
   - type: input
@@ -70,13 +68,13 @@ body:
     id: diagnostics
     attributes:
       label: Diagnostics
-      description: Use teammates_roster for config problems and host features; teammate_check on an existing run for status, summary, api_calls and duration_seconds. Redact goals, summaries and private data. Inspect existing runs before requesting approval for any new paid run.
+      description: Output of /subagents (config problems and host features), and subagent_wait on an existing run (status, followup_mode, resume_skipped, tokens_*). Redact goals, summaries and private data. Inspect existing runs before requesting approval for any new paid run.
       render: text
   - type: textarea
     id: logs
     attributes:
       label: Relevant log lines
-      description: Short excerpts only, for example from `hermes logs -n 300 | grep -i teammate`. Leave out tokens, keys and private message text.
+      description: Short excerpts only, for example from `hermes logs -n 300 | grep -i subagent`. Leave out tokens, keys and private message text.
       render: text
   - type: checkboxes
     id: checks

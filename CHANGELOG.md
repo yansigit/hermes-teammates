@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.0-dev: hermes-subagents (fork of hermes-teammates 1.1.0)
+
+- Renamed to `hermes-subagents`, with five tools: `subagent_spawn(model, ...)` picks a roster model by name,
+  `subagent_followup`, `subagent_wait` (lists runs without `run_ids`), `subagent_steer`, `subagent_stop`. The roster
+  tool is gone from the model surface; the roster is listed in `subagent_spawn` and in `/subagents`.
+- Follow-ups resume the same child conversation on the same model (rebuilt child, restored system prompt, replayed
+  transcript), so the prompt cache is reused. `followup_mode: auto | resume | digest`; anything that cannot resume
+  falls back to a digest with `resume_skipped`. Measured: 94-96% of follow-up input served from cache.
+- Settings: `models` roster key (upstream `teammates` still read), `followup_mode`, and `kanban` (off by default).
+- `subagent_spawn` takes `toolsets`, which can only narrow the entry's toolsets.
+- Removed: benchmark harness, the report-a-problem skill and README media. CI pins Hermes v0.22.2.
+
+
 ## 1.1.0 (2026-10-20)
 
 Additive; with `roster_file` unset, tools, arguments and result fields are exactly 1.0's.
