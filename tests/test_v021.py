@@ -314,7 +314,7 @@ def test_roster_reports_unsupported_notices_before_the_setting(rig, monkeypatch)
     assert 'push completion=unsupported' not in render_roster(rig.service.roster('owner', False))
 
 
-def test_roster_follow_up_names_the_digest(rig):
+def test_roster_follow_up_names_the_mode(rig):
     from dataclasses import make_dataclass
     from hermes_teammates.teammates_tools import render_roster
     rig.host.features = type(rig.host).features.__get__(rig.host)
@@ -322,6 +322,7 @@ def test_roster_follow_up_names_the_digest(rig):
     rig.host.request_class = lambda: request_class
     rig.host.kanban_available = False
     roster = rig.service.roster('owner', False)
-    expected = 'native' if callable(getattr(rig.host.service, 'follow_up', None)) else 'digest'
+    from hermes_teammates.teammates_resume import HermesInternals
+    expected = 'resume' if HermesInternals.available() else 'digest'
     assert roster['features']['follow_up'] == expected
     assert f'follow_up={expected}' in render_roster(roster)

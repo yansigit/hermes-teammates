@@ -15,6 +15,7 @@ import time
 from uuid import uuid4
 
 from .teammates_config import parse
+from .teammates_resume import ResumeUnavailable
 from .teammates_store import INSTANCE_ID
 
 TERMINAL = {'SUCCEEDED': 'succeeded', 'FAILED': 'failed',
@@ -228,7 +229,8 @@ class TeammatesService:
             return dict(reply, wait_error=waited['error'])
         if waited['done']:
             row = dict(waited['done'][0], ok=True, timed_out=False)
-            for key in ('teammate', 'provider', 'model', 'unsupported'):
+            for key in ('teammate', 'provider', 'model', 'unsupported', 'followup_mode', 'parent_run_id',
+                        'resume_skipped'):
                 if key not in row and key in reply:
                     row[key] = reply[key]
             if waited.get('interrupted'):
@@ -239,7 +241,8 @@ class TeammatesService:
             row['interrupted'] = True
         return row
 
-    def _assign(self, session_id, teammate, goal, context, follow_up, kanban_task, parent_agent, *, toolsets=None):
+    def _assign(self, session_id, teammate, goal, context, follow_up, kanban_task, parent_agent, *, toolsets=None,
+                extra=None):
         if self.host.isolated:
             return error('unsupported_isolation', ISOLATION_MESSAGE)
         if not session_id:
@@ -263,18 +266,9 @@ class TeammatesService:
             if launch_toolsets is not None and not set(toolsets) <= set(launch_toolsets):
                 return error('toolsets_not_allowed', f'{teammate} allows only: ' + ', '.join(launch_toolsets))
             launch_toolsets = toolsets
-        if self.host.spawn_paused():
-            return error('spawn_paused')
-        if getattr(self.host.active_parent(), '_delegate_depth', 0) > 0:
-            return error('nested_teammate')
-        self._sweep()
-        with self.store_factory() as store:
-            live = store.list(session_id, status='running')
-        for row in live:
-            self.check(session_id, row['run_id'])
-        with self.store_factory() as store:
-            if len(store.list(session_id, status='running')) >= config['max_live_runs']:
-                return error('too_many_live_runs')
+        blocked = self._admission_error(session_id, config)
+        if blocked:
+            return blocked
         run_id = 'tm_' + uuid4().hex[:12]
         claim, task = None, None
         if kanban_task:
@@ -356,6 +350,9 @@ class TeammatesService:
         except Exception as exc:
             return self._launch_failed(run_id, None, claim, kanban_task, exc)
         try:
+            # Exactly what launch() received, so a resume rebuilds the child (and its prompt) identically.
+            launch_spec = {key: list(value) if isinstance(value, tuple) else value for key, value in kwargs.items()
+                           if key not in ('correlation_id', 'metadata')}
             row = dict(run_id=run_id, teammate=teammate, owner_session_id=session_id,
                        goal=goal, status='running', subagent_id=handle.subagent_id,
                        handle_json=json.dumps(handle_dict(handle)), provider=handle.provider, model=handle.model,
@@ -363,7 +360,9 @@ class TeammatesService:
                        unsupported=json.dumps(unsupported), instance_id=INSTANCE_ID, pid=os.getpid(),
                        kanban_task=kanban_task, kanban_claim=json.dumps(claim) if claim else None,
                        parent_session_key=self.host.completion_target()[0],
-                       created_at=self.clock(), role_hash=role_receipt)
+                       created_at=self.clock(), role_hash=role_receipt,
+                       launch_json=json.dumps(launch_spec), child_session_id=self._child_session_for(handle.subagent_id),
+                       **(extra or {}))
             # In-process the lock covers launch + insert. Across processes the conditional insert
             # rejects the extra run, but its child may already have started and is cancelled at once.
             with self.store_factory() as store:
@@ -377,6 +376,27 @@ class TeammatesService:
             return self._launch_failed(run_id, handle, claim, kanban_task, exc)
         return {key: value for key, value in public_row(row).items()
                 if key in {'ok', 'run_id', 'teammate', 'status', 'provider', 'model', 'unsupported', 'kanban_task'}}
+
+    def _admission_error(self, session_id, config):
+        """Spawn pause, nesting and per-conversation capacity; shared by spawns and follow-ups."""
+        if self.host.spawn_paused():
+            return error('spawn_paused')
+        if getattr(self.host.active_parent(), '_delegate_depth', 0) > 0:
+            return error('nested_teammate')
+        self._sweep()
+        with self.store_factory() as store:
+            live = store.list(session_id, status='running')
+        for row in live:
+            self.check(session_id, row['run_id'])
+        with self.store_factory() as store:
+            if len(store.list(session_id, status='running')) >= config['max_live_runs']:
+                return error('too_many_live_runs')
+        return None
+
+    def _child_session_for(self, subagent_id):
+        """The child session the subagent_start hook recorded for this subagent, if any."""
+        with self._token_lock:
+            return next((sid for sid, sub in self._child_sessions.items() if sub == subagent_id), None)
 
     def _launch_failed(self, run_id, handle, claim, task_id, exc, *, row=None):
         message = f'{type(exc).__name__}: {clip(exc, 1500)}'
@@ -776,12 +796,93 @@ class TeammatesService:
             row = self._get(session_id, run_id)
         if row['status'] == 'running':
             return error('still_running', 'this run is still working; use subagent_steer, or wait for it first')
+        config = parse(self.config_reader())
+        mode, skipped = config['followup_mode'], None
+        if mode == 'digest':
+            skipped = 'followup_mode is digest'
+        elif mode == 'auto':
+            ttl, age = self.host.cache_ttl_seconds(), self.clock() - (row['completed_at'] or 0)
+            if ttl is None:
+                skipped = 'prompt caching is off, so resuming would not save anything'
+            elif age > ttl:
+                skipped = (f'the prompt cache has likely expired ({int(age)} s since the run finished; '
+                           f'children cache for {ttl} s); set followup_mode: resume to resume anyway')
         stripe = int.from_bytes(hashlib.sha256(str(session_id).encode()).digest()[:8], 'big') % 64
-        with _admission_locks[stripe]:
-            reply = self._assign(session_id, row['teammate'], message, None, True, None, parent_agent)
-        if reply.get('ok'):
-            reply = dict(reply, followup_mode='digest', parent_run_id=run_id)
+        reply = None
+        if skipped is None:
+            with _admission_locks[stripe]:
+                reply = self._resume(session_id, row, message, parent_agent, config)
+            if not reply['ok'] and reply['error'] == 'resume_unavailable':
+                skipped, reply = reply['message'], None
+        if reply is None:
+            with _admission_locks[stripe]:
+                reply = self._assign(session_id, row['teammate'], message, None, True, None, parent_agent,
+                                     extra={'parent_run_id': run_id, 'followup_mode': 'digest'})
+            if reply.get('ok'):
+                reply = dict(reply, followup_mode='digest', parent_run_id=run_id, resume_skipped=skipped)
         return self._maybe_wait(session_id, reply, wait_seconds)
+
+    def _transcript_for(self, row, parent):
+        """(messages, system_prompt) of the run's child conversation, or ResumeUnavailable."""
+        if row.get('followup_mode') == 'resume':
+            # A resumed child's own session holds only its new turns; the whole conversation is kept in memory.
+            cached = self.host.resume_transcript(row['run_id'])
+            if cached is None:
+                raise ResumeUnavailable('the resumed conversation is no longer in memory (Hermes restarted, or it '
+                                        'was evicted)')
+            return cached
+        if not row.get('child_session_id'):
+            raise ResumeUnavailable("this run's child session was not recorded")
+        return self.host.load_transcript(parent, row['child_session_id'])
+
+    def _resume(self, session_id, row, message, parent_agent, config):
+        if self.host.isolated:
+            return error('unsupported_isolation', ISOLATION_MESSAGE)
+        teammate = row['teammate']
+        if teammate in config['invalid_teammates']:
+            return error('config_error', '; '.join(config['invalid_teammates'][teammate]))
+        if teammate not in config['teammates']:
+            return error('unknown_teammate', f'{teammate!r} is no longer in the roster')
+        blocked = self._admission_error(session_id, config)
+        if blocked:
+            return blocked
+        if not row.get('launch_json'):
+            return error('resume_unavailable', 'this run has no launch record (it predates resume support)')
+        if row['status'] == 'unknown':
+            return error('resume_unavailable', "this run's outcome is unknown")
+        launch = json.loads(row['launch_json'])
+        parent = parent_agent if parent_agent is not None else self.host.active_parent()
+        run_id = 'tm_' + uuid4().hex[:12]
+        try:
+            messages, system_prompt = self._transcript_for(row, parent)
+            handle = self.host.start_resume(parent=parent, launch=launch, model=row['model'],
+                                            provider=launch.get('provider'), transcript=messages,
+                                            system_prompt=system_prompt, message=message, run_id=run_id)
+        except ResumeUnavailable as exc:
+            return error('resume_unavailable', clip(exc, 1000))
+        except Exception as exc:
+            return error('resume_unavailable', f'{type(exc).__name__}: {clip(exc, 1000)}')
+        new_row = dict(run_id=run_id, teammate=teammate, owner_session_id=session_id, goal=message, status='running',
+                       subagent_id=handle.subagent_id, handle_json=json.dumps(handle_dict(handle)),
+                       provider=handle.provider, model=handle.model, requested_route=row['requested_route'],
+                       requested_effort=row['requested_effort'], unsupported=row['unsupported'] or '[]',
+                       instance_id=INSTANCE_ID, pid=os.getpid(), parent_session_key=self.host.completion_target()[0],
+                       created_at=self.clock(), role_hash=row['role_hash'], parent_run_id=row['run_id'],
+                       followup_mode='resume', launch_json=row['launch_json'], child_session_id=handle.child_session_id,
+                       kanban_task=None, kanban_claim=None)
+        try:
+            with self.store_factory() as store:
+                admitted = store.admit(new_row, config['max_live_runs'])
+            if not admitted:
+                self._launch_failed(run_id, handle, None, None, RuntimeError('capacity exhausted'), row=new_row)
+                return error('too_many_live_runs')
+            self._owners[run_id] = session_id
+            self.start_monitor(new_row, handle, None)
+        except Exception as exc:
+            return self._launch_failed(run_id, handle, None, None, exc)
+        reply = {key: value for key, value in public_row(new_row).items()
+                 if key in {'ok', 'run_id', 'teammate', 'status', 'provider', 'model', 'unsupported'}}
+        return dict(reply, followup_mode='resume', parent_run_id=row['run_id'])
 
     @safe
     def roster(self, session_id, include_runs=True, teammate=None):

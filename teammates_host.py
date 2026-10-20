@@ -4,6 +4,8 @@ from dataclasses import fields
 import json
 import os
 
+from .teammates_resume import HermesInternals, ResumeHandle, ResumeRunner, RoutingLifecycle
+
 
 def lifecycle(ctx):
     return ctx.subagent_lifecycle
@@ -51,6 +53,7 @@ class HermesHost:
         self.ctx = ctx
         self.token_receipts = False
         self.isolated = os.environ.get('HERMES_PLUGIN_HOST_PROCESS', '').strip().lower() not in ('', '0', 'false')
+        self.resume_runner = ResumeRunner()
         try:
             from hermes_cli import kanban_db
             from hermes_cli.kanban_db_connect import connect
@@ -62,7 +65,7 @@ class HermesHost:
 
     @property
     def service(self):
-        return lifecycle(self.ctx)
+        return RoutingLifecycle(lifecycle(self.ctx), self.resume_runner)
 
     @staticmethod
     def request_class():
@@ -82,9 +85,30 @@ class HermesHost:
         return {'reasoning_effort': 'reasoning_effort' in names,
                 'route': next((name for name in ('provider', 'model_profile', 'route', 'profile') if name in names), None),
                 'steer': steer,
-                # The plugin's own follow-up digest works everywhere; 'native' means a Hermes follow-up seam.
-                'follow_up': 'native' if probe(lambda: callable(getattr(self.service, 'follow_up', None))) else 'digest',
+                # 'resume' continues the same child conversation (in-process only: it needs the live parent);
+                # 'digest' sends earlier results to a fresh child.
+                'follow_up': 'resume' if not self.isolated and probe(HermesInternals.available) else 'digest',
                 'token_receipts': self.token_receipts and not self.isolated}
+
+    # Resume seams (all Hermes-internal calls live in teammates_resume.HermesInternals).
+    def start_resume(self, **kwargs):
+        return self.resume_runner.start(**kwargs)
+
+    def resume_transcript(self, run_id):
+        return self.resume_runner.transcript(run_id)
+
+    def load_transcript(self, parent, child_session_id):
+        return self.resume_runner.internals.load_transcript(parent, child_session_id)
+
+    @staticmethod
+    def cache_ttl_seconds():
+        """Seconds a child's prompt cache stays warm, or None when caching is off. Hermes clamps every
+        delegated child to the 5-minute tier (delegate_tool._apply_child_cache_ttl), whatever the global TTL."""
+        try:
+            from agent.agent_runtime_helpers import configured_cache_ttl
+        except ImportError:
+            return 300
+        return 300 if configured_cache_ttl() else None
 
     def launch_request(self, **kwargs):
         return self.request_class()(**kwargs)
@@ -175,6 +199,8 @@ class HermesHost:
 
     @staticmethod
     def handle_from_dict(value):
+        if isinstance(value, dict) and value.get('backend') == 'resume':
+            return ResumeHandle.from_dict(value)
         from agent.subagent_lifecycle import SubagentHandle
         return SubagentHandle.from_dict(value)
 
