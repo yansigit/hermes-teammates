@@ -1,23 +1,26 @@
-name: hermes-teammates
-version: 1.1.0
-description: "Named subagent teammates for Hermes: an operator-defined roster, follow-ups that carry prior results, live steering, and a Kanban teammates lane with a review handoff. Stock Hermes; no patched core."
-author: Electric Sheep
+name: hermes-subagents
+version: 2.0.0-dev
+description: "Subagents on a model you pick by name, with follow-ups that resume the same child conversation (and its prompt cache) on the same model. Fork of hermes-teammates 1.1.0."
+author: yansigit (fork of hermes-teammates by Electric Sheep)
 kind: standalone
 manifest_version: 2
 api_version: 1
-requires_hermes: ">=0.21.4"
+requires_hermes: ">=0.22.2"
 license: MIT
-homepage: https://github.com/100yenadmin/hermes-teammates
-tags: [delegation, subagents, orchestration, kanban]
+homepage: https://github.com/yansigit/hermes-teammates
+tags: [delegation, subagents, model-routing, prompt-cache]
 config_schema:
-  teammates: {type: dict, default: {}, label: "Teammates", description: "JSON object of teammates: {\"reviewer\": {\"description\": \"...\", \"instructions\": \"...\", \"toolsets\": [\"file\"]}}. Optional per teammate: model, route, reasoning_effort. Names: lowercase letters, digits, - or _, up to 32 characters. Problems are listed by /teammates."}
-  lane: {type: str, default: "teammates", label: "Kanban lane", description: "Kanban assignee for teammate cards. Must not be a Hermes profile name, or lane work is refused. Empty falls back to teammates."}
-  claim_ttl_seconds: {type: int, default: 900, label: "Kanban claim TTL (seconds)", description: "How long a teammate's claim on a Kanban card lasts between heartbeats. 60-86400; anything else falls back to 900."}
-  max_live_runs: {type: int, default: 4, label: "Max live runs per conversation", description: "Most teammate runs one conversation may have in flight. 1-16; anything else falls back to 4."}
-  notify_on_completion: {type: bool, default: false, label: "Completion notices (not available on current Hermes)", description: "Reserved. No current Hermes build can confirm which conversation would receive a notice, so none is sent; use teammate_wait. See the README."}
-  roster_file: {type: str, default: "", label: "Roster file", description: "Optional YAML file holding the roster as one top-level teammates mapping (see teammates.example.yaml). A relative path starts at this profile's Hermes home. When set it replaces the Teammates setting; a missing or invalid file gives an empty roster and a config problem."}
-  followup_context_chars: {type: int, default: 8000, label: "Follow-up context budget (characters)", description: "How much of a teammate's earlier results a follow-up carries. 0-24000; anything else falls back to 8000."}
-# Catalog/schema bridge hints: teammates_roster, teammate_assign, teammate_check, teammate_wait.
-# Hermes tool-search settings are global, not plugin settings; see README "Hermes tool search".
-provides_tools: [teammates_roster, teammate_assign, teammate_check, teammate_wait, teammate_message, teammate_stop]
+  models: {type: dict, default: {}, label: "Models", description: "Roster of model names the agent may pick: {\"flash\": {\"model\": \"...\", \"route\": \"<provider>\", \"description\": \"cheap and fast\"}}. Optional per entry: description, instructions, toolsets, model, route, reasoning_effort. Names: lowercase letters, digits, - or _, up to 32 characters. Problems are listed by /subagents."}
+  teammates: {type: dict, default: {}, label: "Teammates (legacy name for Models)", description: "Upstream hermes-teammates name for the roster. Ignored when Models is set."}
+  followup_mode: {type: str, default: "auto", label: "Follow-up mode", description: "auto: resume the same child conversation while the prompt cache is warm (prompt_caching.cache_ttl), otherwise send a digest of earlier results to a fresh child. resume: always resume when possible. digest: never resume. Anything else falls back to auto."}
+  kanban: {type: bool, default: false, label: "Kanban lane", description: "Off by default. When on, subagent_spawn accepts kanban_task and finished runs hand their card to review."}
+  lane: {type: str, default: "teammates", label: "Kanban lane name", description: "Kanban assignee for subagent cards (only with Kanban on). Must not be a Hermes profile name, or lane work is refused. Empty falls back to teammates."}
+  claim_ttl_seconds: {type: int, default: 900, label: "Kanban claim TTL (seconds)", description: "How long a subagent's claim on a Kanban card lasts between heartbeats. 60-86400; anything else falls back to 900."}
+  max_live_runs: {type: int, default: 4, label: "Max live runs per conversation", description: "Most subagent runs one conversation may have in flight. 1-16; anything else falls back to 4."}
+  notify_on_completion: {type: bool, default: false, label: "Completion notices (not available on current Hermes)", description: "Reserved. No current Hermes build can confirm which conversation would receive a notice, so none is sent; use subagent_wait."}
+  roster_file: {type: str, default: "", label: "Roster file", description: "Optional YAML file holding the roster as one top-level models mapping (see teammates.example.yaml). A relative path starts at this profile's Hermes home. When set it replaces the Models setting; a missing or invalid file gives an empty roster and a config problem."}
+  followup_context_chars: {type: int, default: 8000, label: "Digest follow-up budget (characters)", description: "How much of earlier results a digest follow-up carries. 0-24000; anything else falls back to 8000."}
+# Catalog/schema bridge hints: subagent_spawn, subagent_followup, subagent_wait.
+# Hermes tool-search settings are global, not plugin settings.
+provides_tools: [subagent_spawn, subagent_followup, subagent_wait, subagent_steer, subagent_stop]
 provides_hooks: [subagent_start, post_api_request]

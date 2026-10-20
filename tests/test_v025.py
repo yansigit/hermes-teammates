@@ -46,18 +46,18 @@ def waiting_assign(rig, monkeypatch):
 
 def test_assign_wait_schema(plugin):
     from hermes_teammates.teammates_tools import schema
-    spec = schema('teammate_assign')
+    spec = schema('subagent_spawn')
     prop = spec['parameters']['properties']['wait_seconds']
     assert {key: prop[key] for key in ('type', 'minimum', 'maximum', 'default')} == {
         'type': 'number', 'minimum': 0, 'maximum': 300, 'default': 0}
-    assert 'Pass wait_seconds to get the result in the same call.' in spec['description']
+    assert 'pass wait_seconds' in spec['description']
 
 
 @pytest.mark.parametrize('args,seconds', [({}, 0), ({'wait_seconds': 0}, 0), ({'wait_seconds': 0.5}, 0.5), ({'wait_seconds': None}, None)])
 def test_handler_forwards_wait_seconds(plugin, args, seconds):
     from hermes_teammates.teammates_tools import handler
     service = SimpleNamespace(assign=Mock(return_value={'ok': True}))
-    reply = handler('teammate_assign', lambda: service)(dict(teammate='worker', goal='goal', **args))
+    reply = handler('subagent_spawn', lambda: service)(dict(model='worker', goal='goal', **args))
     assert json.loads(reply) == {'ok': True}
     assert service.assign.call_args.kwargs['wait_seconds'] == seconds
 

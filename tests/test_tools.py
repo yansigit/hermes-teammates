@@ -3,14 +3,14 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize('name,args', [('teammates_roster',{}), ('teammate_assign',{'teammate':'worker','goal':'goal'}),
-                                      ('teammate_check',{}), ('teammate_message',{}), ('teammate_stop',{})])
+@pytest.mark.parametrize('name,args', [('subagent_wait',{}), ('subagent_spawn',{'model':'worker','goal':'goal'}),
+                                      ('subagent_followup',{}), ('subagent_steer',{}), ('subagent_stop',{})])
 def test_handlers_forward_session_and_never_raise(rig, name, args):
     from hermes_teammates.teammates_tools import handler
     fn = handler(name, lambda: rig.service)
     result = json.loads(fn(args, parent_agent=SimpleNamespace(session_id='owner'), future_context=True))
     assert isinstance(result, dict)
-    if name == 'teammate_assign':
+    if name == 'subagent_spawn':
         with rig.store() as store:
             assert store.get(result['run_id'], 'owner')
     assert json.loads(fn(None))['ok'] is False
@@ -21,7 +21,7 @@ def test_handlers_forward_session_and_never_raise(rig, name, args):
 
 def test_schemas_and_registration_are_lazy_and_dynamic(plugin):
     from hermes_teammates.teammates_tools import SPECS
-    raw, tools, commands = {'teammates': {'worker': {}}}, {}, {}
+    raw, tools, commands = {'models': {'worker': {}}}, {}, {}
     class Context:
         def get_config(self, key, default=None):
             return raw.get(key, default)
@@ -33,10 +33,10 @@ def test_schemas_and_registration_are_lazy_and_dynamic(plugin):
         def subagent_lifecycle(self):
             raise AssertionError('registration must not create service')
     plugin.register(Context())
-    assert set(tools) == set(SPECS) and set(commands) == {'teammates'}
-    assign = tools['teammate_assign']['schema']
+    assert set(tools) == set(SPECS) and set(commands) == {'subagents'}
+    assign = tools['subagent_spawn']['schema']
     assert 'worker' in assign['description']
-    assert 'enum' not in assign['parameters']['properties']['teammate']
+    assert 'enum' not in assign['parameters']['properties']['model']
 
 
 def test_session_precedence_and_fallback_json(plugin):
@@ -68,6 +68,6 @@ def test_roster_current_config_and_bounded_output(rig):
 
 def test_assign_description_points_to_the_live_roster(plugin):
     from hermes_teammates.teammates_tools import schema
-    assert 'Teammates at startup: reviewer, scout.' in schema('teammate_assign', ['reviewer', 'scout'])['description']
-    empty = schema('teammate_assign', [])['description']
-    assert 'at startup' not in empty and 'teammates_roster' in empty
+    assert 'Models: reviewer; scout.' in schema('subagent_spawn', ['reviewer', 'scout'])['description']
+    empty = schema('subagent_spawn', [])['description']
+    assert 'Models:' not in empty and 'No models are configured yet.' in empty

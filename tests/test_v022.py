@@ -8,25 +8,25 @@ import pytest
 from test_v020 import result, start
 
 
-@pytest.mark.parametrize('consumer', ['assign', 'check', 'wait', 'roster'])
+@pytest.mark.parametrize('consumer', ['assign', 'check', 'wait', 'list'])
 def test_success_reply_is_not_hermes_tool_failure(rig, consumer):
     from agent.display import _detect_tool_failure
     from hermes_teammates.teammates_tools import handler
-    assigned = json.loads(handler('teammate_assign', lambda: rig.service)(
-        {'teammate': 'worker', 'goal': 'synthetic goal'}, session_id='owner'))
+    assigned = json.loads(handler('subagent_spawn', lambda: rig.service)(
+        {'model': 'worker', 'goal': 'synthetic goal'}, session_id='owner'))
     run_id = assigned['run_id']
     rig.service.finalize(run_id, result(rig, run_id))
     name, args = {
-        'assign': ('teammate_assign', None),
-        'check': ('teammate_check', {'run_id': run_id}),
-        'wait': ('teammate_wait', {'run_ids': [run_id], 'mode': 'all', 'wait_seconds': 0}),
-        'roster': ('teammates_roster', {'teammate': 'worker'}),
+        'assign': ('subagent_spawn', None),
+        'check': ('subagent_wait', {'run_ids': [run_id], 'wait_seconds': 0}),
+        'wait': ('subagent_wait', {'run_ids': [run_id], 'mode': 'all', 'wait_seconds': 0}),
+        'list': ('subagent_wait', {}),
     }[consumer]
     reply = json.dumps(assigned) if args is None else handler(name, lambda: rig.service)(args, session_id='owner')
     value = json.loads(reply)
     assert value['ok'], value
     if consumer == 'check':
-        assert value['status'] == 'succeeded'
+        assert value['done'][0]['status'] == 'succeeded'
     if consumer == 'wait':
         assert value['pending'] == [] and value['timed_out'] is False
         assert [row['status'] for row in value['done']] == ['succeeded']
@@ -47,11 +47,11 @@ def test_null_error_omitted_from_all_public_run_consumers(rig):
 def test_actual_tool_failure_keeps_error_and_detection(rig):
     from agent.display import _detect_tool_failure
     from hermes_teammates.teammates_tools import handler
-    reply = handler('teammate_assign', lambda: rig.service)(
-        {'teammate': 'missing', 'goal': 'synthetic goal'}, session_id='owner')
+    reply = handler('subagent_spawn', lambda: rig.service)(
+        {'model': 'missing', 'goal': 'synthetic goal'}, session_id='owner')
     value = json.loads(reply)
     assert value['ok'] is False and value['error'] == 'unknown_teammate'
-    assert _detect_tool_failure('teammate_assign', reply)[0] is True
+    assert _detect_tool_failure('subagent_spawn', reply)[0] is True
     run_id = start(rig)
     rig.lifecycle.state = 'FAILED'
     checked = rig.service.check('owner', run_id)
@@ -72,14 +72,14 @@ def test_failed_status_is_reported_truthfully(plugin):
     row = dict(run_id='synthetic-run', teammate='worker', goal='goal', status='failed', error=None)
     short = json.dumps(public_row(row))
     assert short.index('"failed"') < 500
-    assert _detect_tool_failure('teammate_check', short)[0] is True
+    assert _detect_tool_failure('subagent_wait', short)[0] is True
     long = json.dumps(public_row(dict(row, goal='g' * 600)))
     assert long.index('"failed"') > 500
     # Older Hermes misses a failed status past char 500; Hermes main counts it wherever it sits.
-    assert _detect_tool_failure('teammate_check', long)[0] is hermes_judges_top_level_status()
+    assert _detect_tool_failure('subagent_wait', long)[0] is hermes_judges_top_level_status()
     # Either way a succeeded run is never a failed call, however long its row.
     ok = json.dumps(public_row(dict(row, status='succeeded', goal='g' * 600)))
-    assert _detect_tool_failure('teammate_check', ok)[0] is False
+    assert _detect_tool_failure('subagent_wait', ok)[0] is False
 
 
 @pytest.mark.parametrize('chars', [100, 7950, 7951, 7960, 8000, 9000])

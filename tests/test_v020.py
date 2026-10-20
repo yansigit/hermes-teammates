@@ -145,7 +145,7 @@ def test_push_authored_coalesced_and_recorded(rig, monkeypatch):
     assert len(calls) == 1
     text, kwargs = calls[0]
     assert 'ADVERSARIAL' not in text and 'synthetic goal' not in text
-    assert text.count('succeeded') == 8 and 'and 2 more' in text and 'teammate_wait' in text
+    assert text.count('succeeded') == 8 and 'and 2 more' in text and 'subagent_wait' in text
     assert kwargs['role'] == 'user'
     with rig.store() as store:
         assert all(store.get(i, 'owner')['notified_at'] is not None for i in ids)
@@ -182,7 +182,7 @@ def test_push_suppression_and_failure(rig, monkeypatch, caplog, action):
 
 def test_push_features_and_public_key(rig, monkeypatch):
     feature = rig.service.roster('owner')['features']
-    assert feature['teammate_wait'] is True and feature['push_completion']['status'] == 'unsupported'
+    assert feature['subagent_wait'] is True and feature['push_completion']['status'] == 'unsupported'
     enable_notices(rig, monkeypatch)
     assert rig.service.roster('owner')['features']['push_completion']['status'] == 'on'
     from gateway.session_context import set_session_vars, clear_session_vars
@@ -197,9 +197,9 @@ def test_push_features_and_public_key(rig, monkeypatch):
 
 def test_wait_tool_registered(rig):
     from hermes_teammates.teammates_tools import handler, schema
-    assert schema('teammate_wait')['parameters']['required'] == ['run_ids']
+    assert schema('subagent_wait')['parameters']['required'] == []  # without run_ids it lists runs
     run_id = start(rig)
-    row = json.loads(handler('teammate_wait', lambda: rig.service)(
+    row = json.loads(handler('subagent_wait', lambda: rig.service)(
         {'run_ids': [run_id], 'wait_seconds': 0}, session_id='owner'))
     assert row['ok'] and row['timed_out']
 

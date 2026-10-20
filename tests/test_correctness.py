@@ -220,7 +220,7 @@ def test_steer_fallback_replaces_delegate_notes(rig):
         dict(status='queued', note='do not poll', missed_steer=True, completion_message='automatic'))
     result = rig.host.steer_fallback(object(), 'id', 'text')
     assert set(result) == {'ok', 'status', 'note'} and result['ok']
-    assert 'teammate_check' in result['note']
+    assert 'subagent_wait' in result['note']
 
 
 def test_unknown_plugin_toolsets_refusal_is_clear(rig):

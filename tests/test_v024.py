@@ -60,14 +60,10 @@ def test_wait_rejects_out_of_range(rig, seconds):
     assert rig.service.wait('owner', [start(rig)], wait_seconds=seconds)['error'] == 'invalid_wait'
 
 
-def test_wait_and_check_schema_bounds(plugin):
+def test_wait_schema_bounds(plugin):
     from hermes_teammates.teammates_tools import schema
-    wait = schema('teammate_wait')['parameters']['properties']['wait_seconds']
-    check = schema('teammate_check')['parameters']['properties']['wait_seconds']
+    wait = schema('subagent_wait')['parameters']['properties']['wait_seconds']
     assert wait['maximum'] == 300 and wait['minimum'] == 0 and wait['default'] == 30
-    assert check['maximum'] == 60 and check['minimum'] == 0
-    assert wait['minimum'] <= 300 <= wait['maximum']
-    assert 61 > check['maximum']  # Still outside teammate_check's accepted schema range.
 
 
 @pytest.mark.parametrize('seconds', [30, 300])

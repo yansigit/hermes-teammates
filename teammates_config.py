@@ -3,9 +3,10 @@ import logging
 import re
 import threading
 
-DEFAULTS = {'teammates': {}, 'lane': 'teammates', 'claim_ttl_seconds': 900,
+DEFAULTS = {'teammates': {}, 'models': {}, 'lane': 'teammates', 'claim_ttl_seconds': 900,
             'max_live_runs': 4, 'followup_context_chars': 8000, 'notify_on_completion': False,
-            'roster_file': ''}
+            'roster_file': '', 'kanban': False, 'followup_mode': 'auto'}
+FOLLOWUP_MODES = ('auto', 'resume', 'digest')
 ROSTER_FILE = '_roster_file'  # read() -> parse(): the file the roster came from, and any problem reading it
 FIELDS = {'description', 'instructions', 'toolsets', 'model', 'route', 'reasoning_effort'}
 NAME = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
@@ -33,6 +34,15 @@ def parse(raw):
         result['notify_on_completion'] = raw.get('notify_on_completion', False)
     else:
         errors.append('notify_on_completion: expected boolean; using default')
+    if type(raw.get('kanban', False)) is bool:
+        result['kanban'] = raw.get('kanban', False)
+    else:
+        errors.append('kanban: expected boolean; using default (off)')
+    mode = raw.get('followup_mode', 'auto')
+    if mode in FOLLOWUP_MODES:
+        result['followup_mode'] = mode
+    else:
+        errors.append(f"followup_mode: expected one of {', '.join(FOLLOWUP_MODES)}; using default (auto)")
     for key in raw.keys() - DEFAULTS.keys():
         errors.append(f'unknown setting: {key}')
     for key, low, high in [('claim_ttl_seconds', 60, 86400), ('max_live_runs', 1, 16),
@@ -49,9 +59,11 @@ def parse(raw):
         result['lane'] = lane
     else:
         errors.append('lane: expected non-empty string; using default')
-    configured = raw.get('teammates', {})
+    configured = raw.get('models') or raw.get('teammates', {})
+    if raw.get('models') and raw.get('teammates'):
+        errors.append("both 'models' and 'teammates' are set; using 'models'")
     if not isinstance(configured, dict):
-        errors.append('teammates must be a dict')
+        errors.append('models must be a dict')
         configured = {}
     for name, values in configured.items():
         if not isinstance(name, str) or not NAME.fullmatch(name):
@@ -112,6 +124,7 @@ def read(ctx, load_file=None):
     values = {key: ctx.get_config(key, default) for key, default in DEFAULTS.items()}
     path = values['roster_file']
     if load_file is not None and isinstance(path, str) and path.strip():
-        values['teammates'], error, resolved = load_file(path.strip())
+        values['models'], error, resolved = load_file(path.strip())
+        values['teammates'] = {}
         values[ROSTER_FILE] = {'path': resolved, 'errors': [error] if error else []}
     return values

@@ -1,4 +1,4 @@
-"""hermes-teammates v1.1.0 registration; state opens only on first use."""
+"""hermes-subagents registration (fork of hermes-teammates 1.1.0); state opens only on first use."""
 import logging
 import os
 import threading
@@ -23,18 +23,19 @@ def register(ctx):
                 service = TeammatesService(host, host.store_factory, read_settings)
             return service
     config = teammates_config.parse(read_settings())
-    names = [name for name in config['teammates'] if name not in config['invalid_teammates']]
+    models = [(name, entry.get('description') or '') for name, entry in config['teammates'].items()
+              if name not in config['invalid_teammates']]
     for name in teammates_tools.SPECS:
-        schema = teammates_tools.schema(name, names)
-        ctx.register_tool(name=name, toolset='teammates', schema=schema,
+        schema = teammates_tools.schema(name, models, kanban=config['kanban'])
+        ctx.register_tool(name=name, toolset='subagents', schema=schema,
                           handler=teammates_tools.handler(name, get_service), description=schema['description'])
     def command(raw_args='', **kwargs):
         # The slash-command API supplies only raw text. Do not infer a session from private CLI state.
         try:
             return teammates_tools.render_roster(get_service().roster(None, include_runs=False))
         except Exception as exc:
-            return f'hermes-teammates: internal error: {str(exc)[:2000]}'
-    ctx.register_command('teammates', handler=command, description='List teammates and lane tasks')
+            return f'hermes-subagents: internal error: {str(exc)[:2000]}'
+    ctx.register_command('subagents', handler=command, description='List subagent models and settings')
     def callback(method):
         def on_hook(**kwargs):
             try:

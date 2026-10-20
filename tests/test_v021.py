@@ -81,7 +81,7 @@ def register_hooks(plugin, rig, monkeypatch, *, hook_api=True, fail=False):
     monkeypatch.setattr(rig.host, 'features', HermesHost.features.__get__(rig.host))
     plugin.register(ctx)
     # Registration remains lazy; a tool call materializes the service.
-    tools['teammates_roster']['handler']({'include_runs': False}, session_id='owner')
+    tools['subagent_wait']['handler']({}, session_id='owner')
     return hooks
 
 
@@ -170,7 +170,7 @@ def test_token_feature_unavailable(plugin, rig, monkeypatch, missing):
 def test_explain_teammate_readonly_config_and_tool(rig, monkeypatch):
     from hermes_cli import config as global_config
     from hermes_teammates.teammates_config import parse
-    from hermes_teammates.teammates_tools import handler, schema, render_roster
+    from hermes_teammates.teammates_tools import render_roster
     global_values = {'delegation': {'inherit_mcp_toolsets': False,
                                   'worktree_isolation': True, 'child_timeout_seconds': 42}}
     original = json.dumps(global_values)
@@ -180,9 +180,8 @@ def test_explain_teammate_readonly_config_and_tool(rig, monkeypatch):
         return global_values
     monkeypatch.setattr(global_config, 'load_config_readonly', readonly)
     rig.raw['teammates']['worker'].update(toolsets=['file'], route='requested', reasoning_effort='high')
-    assert schema('teammates_roster')['parameters']['properties']['teammate']['type'] == 'string'
-    row = json.loads(handler('teammates_roster', lambda: rig.service)(
-        {'teammate': 'worker', 'include_runs': False}, session_id='owner'))
+    # The explain view is operator-side now (no roster tool); it stays bounded JSON.
+    row = json.loads(json.dumps(rig.service.roster('owner', False, 'worker')))
     assert row['ok'] and len(row['teammates']) == 1
     teammate = row['teammates'][0]
     assert teammate['definition'] == parse(rig.raw)['teammates']['worker']

@@ -4,7 +4,7 @@ import json
 import pytest
 
 
-PARENT_TOOLS = ('teammate_assign', 'teammate_wait', 'teammate_check', 'teammates_roster')
+PARENT_TOOLS = ('subagent_spawn', 'subagent_wait', 'subagent_followup')
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def catalog(rig, monkeypatch):
     config = tool_search.ToolSearchConfig.from_raw({'enabled': 'auto', 'defer': []})
     monkeypatch.setattr(tool_search, 'load_config_readonly', lambda: config)
     for name in SPECS:
-        registry.register(name=name, toolset='teammates', schema=schema(name, ['worker']),
+        registry.register(name=name, toolset='subagents', schema=schema(name, ['worker']),
                           handler=handler(name, lambda: rig.service))
     return registry, registry.get_definitions(set(SPECS), quiet=True), config
 
@@ -50,11 +50,11 @@ def test_described_example_resolves_validates_and_calls_plugin(catalog, rig, nam
     assert len(envelope['calls']) == 1 and envelope['calls'][0]['name'] == name
     # Replace illustrative values with a real fake-lifecycle run in this conversation.
     args = envelope['calls'][0]['arguments']
-    if name == 'teammate_assign':
-        args['teammate'] = 'worker'
-    if name in ('teammate_check', 'teammate_wait'):
+    if name == 'subagent_spawn':
+        args['model'] = 'worker'
+    if name in ('subagent_followup', 'subagent_wait'):
         run = rig.service.assign('owner', 'worker', 'Synthetic fixture task')
-        if name == 'teammate_check':
+        if name == 'subagent_followup':
             args['run_id'] = run['run_id']
         else:
             args['run_ids'] = [run['run_id']]
@@ -81,9 +81,9 @@ def test_bridge_rejects_missing_name_and_returns_schema_for_missing_goal(catalog
     from tools.tool_search import resolve_underlying_call, validate_deferred_call_args
 
     _, _, _ = catalog
-    _, _, error = resolve_underlying_call({'calls': [{'arguments': {'teammate': 'worker'}}]})
+    _, _, error = resolve_underlying_call({'calls': [{'arguments': {'model': 'worker'}}]})
     assert "requires a 'name'" in error
-    error = json.loads(validate_deferred_call_args('teammate_assign', {'teammate': 'worker'}))
+    error = json.loads(validate_deferred_call_args('subagent_spawn', {'model': 'worker'}))
     assert error['constraint'] == 'required'
     assert 'goal' in error['parameters']['required']
     assert 'Retry tool_call' in error['hint']

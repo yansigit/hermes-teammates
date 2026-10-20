@@ -131,4 +131,4 @@ def test_admission_lock_array_is_bounded(rig):
 
 def test_wait_id_schema(plugin):
     from hermes_teammates.teammates_tools import schema
-    assert schema('teammate_wait')['parameters']['properties']['run_ids']['items']['minLength'] == 1
+    assert schema('subagent_wait')['parameters']['properties']['run_ids']['items']['minLength'] == 1

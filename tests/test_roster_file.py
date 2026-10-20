@@ -50,9 +50,9 @@ def test_absolute_roster_file_can_be_shared(plugin, tmp_path):
     assert set(_config({'roster_file': str(shared)})['teammates']) == {'reviewer'}
 
 
-@pytest.mark.parametrize('text,problem', [(None, 'not found'), ('teammates: [1, 2]\n', "top-level 'teammates'"),
-                                          ('teammates: {\n', 'not valid YAML'), ('- a\n', "top-level 'teammates'"),
-                                          ('', "top-level 'teammates'")])
+@pytest.mark.parametrize('text,problem', [(None, 'not found'), ('teammates: [1, 2]\n', "top-level 'models'"),
+                                          ('teammates: {\n', 'not valid YAML'), ('- a\n', "top-level 'models'"),
+                                          ('', "top-level 'models'")])
 def test_bad_roster_file_gives_an_empty_roster_and_a_problem(plugin, text, problem):
     if text is not None:
         (home() / 'teammates.yaml').write_text(text, encoding='utf-8')
@@ -120,7 +120,7 @@ def test_empty_roster_from_a_bad_file_points_at_the_problem(rig):
     from hermes_teammates.teammates_tools import render_roster
     _use(rig, {'roster_file': 'missing.yaml'})
     text = render_roster(rig.service.roster('s'))
-    assert 'No teammates in the roster file' in text and 'missing.yaml not found' in text
+    assert 'No models in the roster file' in text and 'missing.yaml not found' in text
 
 
 def test_intentionally_empty_roster_file_points_at_no_problems(rig):
@@ -130,7 +130,7 @@ def test_intentionally_empty_roster_file_points_at_no_problems(rig):
     value = rig.service.roster('s')
     assert value['teammates'] == [] and not value['config_errors']
     text = render_roster(value)
-    assert 'No teammates in the roster file.' in text and 'config problems' not in text
+    assert 'No models in the roster file.' in text and 'config problems' not in text
 
 
 def test_roster_file_is_read_on_every_call(rig):
@@ -156,5 +156,5 @@ def test_registration_reads_the_file_and_no_tool_argument_sets_the_path(plugin):
                           register_tool=lambda **k: tools.update({k['name']: k}),
                           register_command=lambda *a, **k: None)
     plugin.register(ctx)
-    assert 'Teammates at startup: reviewer.' in tools['teammate_assign']['description']
+    assert 'Models: reviewer' in tools['subagent_spawn']['description']
     assert 'roster_file' not in json.dumps([tool['schema'] for tool in tools.values()])

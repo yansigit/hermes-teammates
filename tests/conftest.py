@@ -88,8 +88,9 @@ def rig(plugin, tmp_path):
     from hermes_teammates.teammates_store import Store
     import sqlite3
 
+    # Upstream's Kanban lane tests share this rig, so it opts into the (off-by-default) lane.
     raw = {'teammates': {'worker': {'instructions': 'Be careful'}, 'other': {}},
-           'claim_ttl_seconds': 60}
+           'claim_ttl_seconds': 60, 'kanban': True}
     lifecycle = FakeLifecycle()
     ctx = SimpleNamespace(subagent_lifecycle=lifecycle)
     host = HermesHost(ctx)

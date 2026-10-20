@@ -120,10 +120,10 @@ def test_slash_command_renders_text(rig):
     # D7: /teammates is read by people, not models.
     from hermes_teammates.teammates_tools import render_roster
     text = render_roster(rig.service.roster(None, include_runs=False))
-    assert text.startswith('Teammates (2):')
-    assert '  worker - (no description) [toolsets: inherits parent]' in text
+    assert text.startswith('Models (2):')
+    assert '  worker - parent model; (no description) [toolsets: inherits parent]' in text
     assert 'This Hermes build: steer=no' in text
-    assert render_roster({'ok': False, 'error': 'boom'}) == 'hermes-teammates: boom'
+    assert render_roster({'ok': False, 'error': 'boom'}) == 'hermes-subagents: boom'
 
 
 def test_monitor_start_failure_releases_parent_and_registration(rig, monkeypatch):

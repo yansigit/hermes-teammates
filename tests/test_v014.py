@@ -39,7 +39,7 @@ def test_plain_monitor_retains_result_without_check(rig):
     finally:
         release.set()
         thread.join(timeout=5)
-    assert thread.daemon and thread.name == f"hermes-teammates-{assigned['run_id']}"
+    assert thread.daemon and thread.name == f"hermes-subagents-{assigned['run_id']}"
     assert not thread.is_alive()
     assert len(waits) == 2 and waits[0] >= 30
     assert assigned['run_id'] not in rig.service._monitor_parents

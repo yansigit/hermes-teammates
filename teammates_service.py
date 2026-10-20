@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 TOKEN_KEYS = {'tokens_input': 'input_tokens', 'tokens_output': 'output_tokens',
               'tokens_cache_read': 'cache_read_tokens', 'tokens_cache_write': 'cache_write_tokens',
               'tokens_reasoning': 'reasoning_tokens'}
-RELAY_INSTRUCTION = ('When reporting teammate results, relay findings, citations and verdict verbatim. '
+RELAY_INSTRUCTION = ('When reporting subagent results, relay findings, citations and verdict verbatim. '
                      'Keep your commentary separate.')
 
 
@@ -133,7 +133,7 @@ def handle_dict(handle):
     return to_dict() if callable(to_dict) else as_dict(handle)
 
 
-ISOLATION_MESSAGE = ('hermes-teammates needs plugins.isolation: in_process. Under the plugin host, Hermes cannot yet '
+ISOLATION_MESSAGE = ('hermes-subagents needs plugins.isolation: in_process. Under the plugin host, Hermes cannot yet '
                      'resolve the parent session for calls made after a tool returns (run monitors), and the '
                      'plugin cannot see the delegation depth or spawn pause it enforces.')
 
@@ -209,14 +209,18 @@ class TeammatesService:
 
     @safe
     def assign(self, session_id, teammate, goal, context=None, follow_up=False,
-               kanban_task=None, parent_agent=None, wait_seconds=0):
+               kanban_task=None, parent_agent=None, wait_seconds=0, toolsets=None):
         if wait_seconds is None:  # an explicit null from the model means the default
             wait_seconds = 0
         if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 300:
             return error('invalid_assign', 'wait_seconds must be a number from 0 to 300')
         stripe = int.from_bytes(hashlib.sha256(str(session_id).encode()).digest()[:8], 'big') % 64
         with _admission_locks[stripe]:
-            reply = self._assign(session_id, teammate, goal, context, follow_up, kanban_task, parent_agent)
+            reply = self._assign(session_id, teammate, goal, context, follow_up, kanban_task, parent_agent,
+                                 toolsets=toolsets)
+        return self._maybe_wait(session_id, reply, wait_seconds)
+
+    def _maybe_wait(self, session_id, reply, wait_seconds):
         if wait_seconds == 0 or not reply['ok']:
             return reply
         waited = self.wait(session_id, [reply['run_id']], mode='all', wait_seconds=wait_seconds)
@@ -235,7 +239,7 @@ class TeammatesService:
             row['interrupted'] = True
         return row
 
-    def _assign(self, session_id, teammate, goal, context, follow_up, kanban_task, parent_agent):
+    def _assign(self, session_id, teammate, goal, context, follow_up, kanban_task, parent_agent, *, toolsets=None):
         if self.host.isolated:
             return error('unsupported_isolation', ISOLATION_MESSAGE)
         if not session_id:
@@ -244,9 +248,21 @@ class TeammatesService:
         if teammate in config['invalid_teammates']:
             return error('config_error', '; '.join(config['invalid_teammates'][teammate]))
         if teammate not in config['teammates']:
-            return error('unknown_teammate')
+            return error('unknown_teammate', f"unknown model name {str(teammate)[:64]!r}; configured: "
+                         + (', '.join(config['teammates']) or 'none'))
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 12000:
             return error('invalid_goal')
+        if kanban_task and not config['kanban']:
+            return error('kanban_disabled', 'Kanban is off; set kanban: true in the plugin settings to use it')
+        launch_toolsets = config['teammates'][teammate]['toolsets']
+        if toolsets is not None:
+            if (not isinstance(toolsets, list) or not 0 < len(toolsets) <= 24 or
+                    not all(isinstance(name, str) and name.strip() for name in toolsets)):
+                return error('invalid_toolsets', 'toolsets must be a list of 1-24 toolset names')
+            toolsets = list(dict.fromkeys(name.strip() for name in toolsets))
+            if launch_toolsets is not None and not set(toolsets) <= set(launch_toolsets):
+                return error('toolsets_not_allowed', f'{teammate} allows only: ' + ', '.join(launch_toolsets))
+            launch_toolsets = toolsets
         if self.host.spawn_paused():
             return error('spawn_paused')
         if getattr(self.host.active_parent(), '_delegate_depth', 0) > 0:
@@ -274,7 +290,7 @@ class TeammatesService:
                     return error('kanban_task_not_in_lane')
                 if task.status != 'ready':
                     return error('kanban_task_not_ready')
-                claimer = f'hermes-teammates:{run_id}'
+                claimer = f'hermes-subagents:{run_id}'
                 claimed = self.host.claim_task(conn, kanban_task, ttl_seconds=config['claim_ttl_seconds'],
                                                claimer=claimer)
                 if claimed is None:
@@ -324,9 +340,9 @@ class TeammatesService:
                 parts.append(budget_clip(context, remaining))
             combined = '\n\n'.join(part for part in parts if part)
             kwargs = dict(goal=goal, context=combined or None, role='leaf',
-                          allowed_toolsets=tuple(teammate_config['toolsets'] or ()) or None,
+                          allowed_toolsets=tuple(launch_toolsets or ()) or None,
                           model=teammate_config['model'], correlation_id=run_id,
-                          metadata={'plugin': 'hermes-teammates', 'teammate': teammate, 'run_id': run_id})
+                          metadata={'plugin': 'hermes-subagents', 'teammate': teammate, 'run_id': run_id})
             unsupported, features = [], self.host.features()
             for key in ('reasoning_effort', 'route'):
                 value = teammate_config[key]
@@ -573,7 +589,7 @@ class TeammatesService:
                 listed = '; '.join(f"{r['teammate']} finished (run {r['run_id']}, {r['status']})" for r in rows[:8])
                 if len(rows) > 8:
                     listed += f'; and {len(rows) - 8} more'
-                content = f'[hermes-teammates] {listed}. Call teammate_check or teammate_wait to read the result.'
+                content = f'[hermes-subagents] {listed}. Call subagent_wait to read the result.'
                 accepted = self.host.ctx.inject_message(content, role='user', session_key=rows[0]['parent_session_key'])
             if accepted is True:
                 with self.store_factory() as store:
@@ -619,11 +635,11 @@ class TeammatesService:
                             'summary_chars', 'summary_clipped', 'relay_instruction') if key in result}
                 accepted, reason = self.host.request_review(
                     conn, row['kanban_task'], summary=result['summary'],
-                    metadata={'hermes_teammates': metadata},
+                    metadata={'hermes_subagents': metadata},
                     expected_run_id=claim['kanban_run_id'], with_reason=True)
                 return 'review' if accepted else f'review_refused:{reason}'
             reason = UNKNOWN_ERROR if status == 'unknown' else (
-                f'hermes-teammates run {run_id} {status}: {clip(row["error"], 500) or ""}')
+                f'hermes-subagents run {run_id} {status}: {clip(row["error"], 500) or ""}')
             blocked = self.host.block_task(conn, row['kanban_task'], reason=reason,
                                           expected_run_id=claim['kanban_run_id'])
             return 'blocked' if blocked else 'block_refused'
@@ -674,7 +690,7 @@ class TeammatesService:
                 self._monitor_parents.pop(row['run_id'], None)
                 self.monitors.pop(row['run_id'], None)
         thread = threading.Thread(target=context.run, args=(run,), daemon=True,
-                                  name=f"hermes-teammates-{row['run_id']}")
+                                  name=f"hermes-subagents-{row['run_id']}")
         self.monitors[row['run_id']] = thread
         try:
             thread.start()
@@ -732,10 +748,46 @@ class TeammatesService:
         return dict(value, ok=bool(value.get('accepted')))
 
     @safe
+    def list_runs(self, session_id, limit=20):
+        """This conversation's recent runs, newest first, with short summary previews."""
+        if not session_id:
+            return error('no_session')
+        self._sweep()
+        with self.store_factory() as store:
+            rows = store.list(session_id, limit=limit)
+        runs = [self._public_run(row, 300) for row in rows]
+        for row in runs:
+            row.pop('relay_instruction', None)
+        return dict(ok=True, runs=runs, note='Previews are clipped; subagent_wait with run_ids returns full results.')
+
+    @safe
+    def followup(self, session_id, run_id, message, wait_seconds=0, parent_agent=None):
+        if wait_seconds is None:
+            wait_seconds = 0
+        if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 300:
+            return error('invalid_followup', 'wait_seconds must be a number from 0 to 300')
+        if not isinstance(message, str) or not message.strip() or len(message) > 12000:
+            return error('invalid_message', 'message must be 1-12000 characters')
+        row = self._get(session_id, run_id)
+        if row is None:
+            return error('unknown_run')
+        if row['status'] == 'running':  # the ledger may lag a child that already finished
+            self.check(session_id, run_id)
+            row = self._get(session_id, run_id)
+        if row['status'] == 'running':
+            return error('still_running', 'this run is still working; use subagent_steer, or wait for it first')
+        stripe = int.from_bytes(hashlib.sha256(str(session_id).encode()).digest()[:8], 'big') % 64
+        with _admission_locks[stripe]:
+            reply = self._assign(session_id, row['teammate'], message, None, True, None, parent_agent)
+        if reply.get('ok'):
+            reply = dict(reply, followup_mode='digest', parent_run_id=run_id)
+        return self._maybe_wait(session_id, reply, wait_seconds)
+
+    @safe
     def roster(self, session_id, include_runs=True, teammate=None):
         self._sweep()
         config, features = parse(self.config_reader()), self.host.features()
-        features = dict(features, teammate_wait=True,
+        features = dict(features, subagent_wait=True,
                         push_completion=self.host.push_feature(config['notify_on_completion']))
         selected = teammate
         if selected is not None:
@@ -760,15 +812,16 @@ class TeammatesService:
             runs = [self._public_run(row, 300) for row in store.list(session_id, teammate=selected, limit=20)] if include_runs else []
         for row in runs:
             row.pop('relay_instruction', None)
-        lane = {'name': config['lane'], 'available': self.host.kanban_available,
-                'is_profile': self.host.lane_is_profile(config['lane']), 'open_tasks': []}
-        if lane['available']:
+        lane = {'name': config['lane'], 'enabled': config['kanban'], 'available': self.host.kanban_available,
+                'is_profile': self.host.lane_is_profile(config['lane']) if config['kanban'] else None, 'open_tasks': []}
+        if lane['available'] and lane['enabled']:
             with self.host.connection() as conn:
                 lane['open_tasks'] = self.host.open_tasks(conn, config['lane'])
         invalid = [dict(name=clip(name, 300), errors=errors) for name, errors in config['invalid_teammates'].items()]
         value = dict(ok=True, teammates=teammates, invalid_teammates=invalid, features=features,
                      config_errors=config['config_errors'], runs=runs, lane=lane,
-                     relay_instruction=RELAY_INSTRUCTION + ' Roster previews are clipped; teammate_check returns '
+                     followup_mode=config['followup_mode'],
+                     relay_instruction=RELAY_INSTRUCTION + ' Roster previews are clipped; subagent_wait returns '
                      'the full retained text. If summary_clipped is true, report it as incomplete.')
         if config['roster_path']:
             value['roster_file'] = clip(config['roster_path'], 500)  # only when set, so 1.0 payloads are unchanged

@@ -70,7 +70,7 @@ def test_assign_happy_path_and_followup_scoping(rig):
     assert result['ok'] and result['provider'] == 'fake'
     request = rig.lifecycle.requests[-1]
     assert request.role == 'leaf' and request.correlation_id == result['run_id']
-    assert request.metadata['plugin'] == 'hermes-teammates'
+    assert request.metadata['plugin'] == 'hermes-subagents'
     assert 'new-entry' in request.context and 'old-entry' not in request.context
     assert 'foreign-secret' not in request.context and 'other-secret' not in request.context
     assert request.context.startswith('Be careful') and request.context.endswith('caller tail')

@@ -172,8 +172,8 @@ def test_f8_startup_description_omits_invalid_teammates(plugin):
                           register_tool=lambda **k: tools.update({k['name']: k}),
                           register_command=lambda *a, **k: None)
     plugin.register(ctx)
-    description = tools['teammate_assign']['description']
-    assert 'Teammates at startup: valid.' in description and 'invalid' not in description
+    description = tools['subagent_spawn']['description']
+    assert 'Models: valid.' in description and 'invalid' not in description
 
 
 def test_f9_toolsets_are_trimmed_and_unknown_suffix_is_honest(rig):

@@ -94,7 +94,7 @@ def test_raw_and_managed_report_the_winning_managed_layer(plugin, monkeypatch):
     assert sources['child_timeout_seconds'] == 'managed'
 
 
-@pytest.mark.parametrize('consumer', ['teammate_check', 'teammate_wait'])
+@pytest.mark.parametrize('consumer', ['subagent_wait'])
 def test_japanese_summary_reply_is_raw_json(rig, consumer):
     from agent.display import _detect_tool_failure
     from agent.tool_dispatch_helpers import make_tool_result_message
@@ -103,12 +103,11 @@ def test_japanese_summary_reply_is_raw_json(rig, consumer):
     receipt = result(rig, run_id)
     receipt.summary = ('テスト' * 667)[:2000]
     rig.service.finalize(run_id, receipt)
-    args = ({'run_id': run_id} if consumer == 'teammate_check' else
-            {'run_ids': [run_id], 'wait_seconds': 0})
+    args = {'run_ids': [run_id], 'wait_seconds': 0}
     reply = handler(consumer, lambda: rig.service)(args, session_id='owner')
     assert receipt.summary in reply and '\\u' not in reply
     value = json.loads(reply)
-    row = value if consumer == 'teammate_check' else value['done'][0]
+    row = value['done'][0]
     assert row['summary'] == receipt.summary and not row['summary_clipped']
     assert make_tool_result_message(consumer, reply, 'synthetic-call')['content'] == reply
     assert _detect_tool_failure(consumer, reply) == _detect_tool_failure(consumer, json.dumps(value))
@@ -118,14 +117,13 @@ def test_internal_error_reply_is_raw_json(plugin):
     from hermes_teammates.teammates_tools import handler
     def broken():
         raise ValueError('テスト失敗')
-    reply = handler('teammate_check', broken)({})
+    reply = handler('subagent_wait', broken)({})
     assert 'テスト失敗' in reply and '\\u' not in reply
     assert json.loads(reply)['error'] == 'internal_error'
 
 
 def test_astral_explain_fits_without_instruction_clipping(rig, monkeypatch):
     from hermes_teammates import teammates_config
-    from hermes_teammates.teammates_tools import handler
     # Name validation is ASCII; bypass only its predicate to stress serialization
     # with the SPEC's astral name, without expanding the supported config grammar.
     name = '😀' * 32
@@ -133,7 +131,7 @@ def test_astral_explain_fits_without_instruction_clipping(rig, monkeypatch):
     rig.raw['teammates'] = {name: dict(description='😀' * 300, instructions='',
         model='😀' * 100, route='😀' * 100, reasoning_effort='😀' * 100,
         toolsets=[f'{i:02d}' + 'x' * 46 for i in range(24)])}
-    reply = handler('teammates_roster', lambda: rig.service)({'teammate': name}, session_id='owner')
+    reply = json.dumps(rig.service.roster('owner', True, name), ensure_ascii=False)
     assert len(reply) <= 16000
     value = json.loads(reply)
     assert value['ok'] and value['teammates'][0]['name'] == name
@@ -143,12 +141,11 @@ def test_astral_explain_fits_without_instruction_clipping(rig, monkeypatch):
 
 
 def test_raw_explain_budget_still_clips_instructions(rig):
-    from hermes_teammates.teammates_tools import handler
     rig.raw['teammates']['worker']['instructions'] = '😀' * 4000
     # Arbitrary delegation values are taken from the merged read; this synthetic
     # value makes the otherwise bounded single-definition raw reply exceed 16K.
     rig.host.delegation_settings = lambda: ({'synthetic': 'd' * 12000}, {'synthetic': 'config'})
-    reply = handler('teammates_roster', lambda: rig.service)({'teammate': 'worker'}, session_id='owner')
+    reply = json.dumps(rig.service.roster('owner', True, 'worker'), ensure_ascii=False)
     assert len(reply) <= 16000
     definition = json.loads(reply)['teammates'][0]['definition']
     assert definition['instructions_clipped'] is True
@@ -164,5 +161,5 @@ def test_failure_detection_raw_unicode_keeps_existing_window(plugin):
                             ({'ok': True, 'summary': 'テスト成功'}, False),
                             ({'summary': 'テ' * 600, 'status': 'failed'}, top_level)]:
         raw = json.dumps(value, ensure_ascii=False)
-        assert _detect_tool_failure('teammate_check', raw)[0] is expected
-        assert _detect_tool_failure('teammate_check', raw) == _detect_tool_failure('teammate_check', json.dumps(value))
+        assert _detect_tool_failure('subagent_wait', raw)[0] is expected
+        assert _detect_tool_failure('subagent_wait', raw) == _detect_tool_failure('subagent_wait', json.dumps(value))

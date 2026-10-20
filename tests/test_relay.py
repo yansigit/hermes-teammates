@@ -16,21 +16,21 @@ def finish(rig, run_id, text):
     return rig.service.finalize(run_id, receipt)
 
 
-@pytest.mark.parametrize('consumer', ['teammate_assign', 'teammate_wait', 'teammate_check'])
+@pytest.mark.parametrize('consumer', ['subagent_spawn', 'subagent_wait'])
 @pytest.mark.parametrize('text', [TEXT, '日本語\n"引用"', TEXT + '界' * 9000],
                          ids=['multiline', 'unicode', 'ledger-clipped'])
 def test_finished_wire_preserves_summary_and_adds_relay(rig, monkeypatch, consumer, text):
     from hermes_teammates.teammates_tools import handler
-    if consumer == 'teammate_assign':
+    if consumer == 'subagent_spawn':
         monkeypatch.setattr(rig.service, 'start_monitor', lambda row, *a: finish(rig, row['run_id'], text))
-        args = dict(teammate='worker', goal='synthetic task', wait_seconds=1)
+        args = dict(model='worker', goal='synthetic task', wait_seconds=1)
     else:
         run_id = rig.service.assign('owner', 'worker', 'synthetic task')['run_id']
         finish(rig, run_id, text)
-        args = dict(run_ids=[run_id], wait_seconds=0) if consumer == 'teammate_wait' else dict(run_id=run_id)
+        args = dict(run_ids=[run_id], wait_seconds=0)
     wire = handler(consumer, lambda: rig.service)(args, session_id='owner')
     parsed = json.loads(wire)
-    row = parsed['done'][0] if consumer == 'teammate_wait' else parsed
+    row = parsed['done'][0] if consumer == 'subagent_wait' else parsed
     assert row['summary'] == text[:8000]
     assert row['summary_chars'] == len(text)
     assert row['summary_clipped'] is (len(text) > 8000)
@@ -41,8 +41,7 @@ def test_finished_wire_preserves_summary_and_adds_relay(rig, monkeypatch, consum
     assert '\\n' in wire and '\\"' in wire  # Summary stays a valid JSON string, decoded exactly above.
     if row['summary_clipped']:
         assert 'clipped' in guidance and 'incomplete' in guidance
-    if consumer != 'teammate_check':
-        assert 'goal' not in row
+    assert 'goal' not in row
 
 
 def test_wait_and_roster_use_their_existing_budgets(rig):
@@ -62,7 +61,7 @@ def test_wait_and_roster_use_their_existing_budgets(rig):
     assert len(json.dumps(roster, ensure_ascii=False)) <= 16000
     guidance = roster['relay_instruction']
     assert 'verbatim' in guidance and 'previews' in guidance and 'clipped' in guidance
-    assert 'teammate_check' in guidance and 'full' in guidance
+    assert 'subagent_wait' in guidance and 'full' in guidance
     for row in roster['runs']:
         assert row['summary'] == '語' * 300 and row['summary_clipped']
         assert 'relay_instruction' not in row
@@ -115,7 +114,7 @@ def test_kanban_summary_and_additive_relay_receipt(rig, monkeypatch, size):
     finish(rig, run_id, text)
     payload = calls[0]
     assert payload['summary'] == text[:4000]
-    meta = payload['metadata']['hermes_teammates']
+    meta = payload['metadata']['hermes_subagents']
     assert meta['run_id'] == run_id and meta['result_hash']
     assert meta['summary_chars'] == len(text)
     assert meta['summary_clipped'] is (len(text) > 4000)
@@ -126,7 +125,7 @@ def test_kanban_summary_and_additive_relay_receipt(rig, monkeypatch, size):
 
 def test_tool_and_roster_guidance(plugin, rig):
     from hermes_teammates.teammates_tools import render_roster, schema
-    for name in ('teammate_assign', 'teammate_wait', 'teammate_check'):
+    for name in ('subagent_spawn', 'subagent_wait', 'subagent_followup'):
         assert 'verbatim' in schema(name)['description']
     text = render_roster(rig.service.roster('owner'))
     assert 'verbatim' in text and 'clipped' in text

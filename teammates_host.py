@@ -34,11 +34,12 @@ def load_roster_file(path, home=None):
         return {}, f'roster_file: {target} is not UTF-8 text', str(target)
     except Exception:
         return {}, f'roster_file: {target} is not valid YAML', str(target)
-    if not isinstance(data, dict) or not isinstance(data.get('teammates'), dict):
-        return {}, f"roster_file: {target} needs a top-level 'teammates' mapping", str(target)
-    extra = sorted(str(key) for key in data if key != 'teammates')
+    key = next((key for key in ('models', 'teammates') if isinstance(data, dict) and isinstance(data.get(key), dict)), None)
+    if key is None:
+        return {}, f"roster_file: {target} needs a top-level 'models' mapping", str(target)
+    extra = sorted(str(name) for name in data if name not in ('models', 'teammates'))
     error = f"roster_file: {target} has unknown top-level key(s): {', '.join(extra)}" if extra else None
-    return data['teammates'], error, str(target)
+    return data[key], error, str(target)
 
 
 def current_session_id(kwargs):
@@ -203,7 +204,7 @@ class HermesHost:
                            {'action': 'steer', 'subagent_id': subagent_id, 'message': text},
                            parent_agent=parent_agent))
         return {'ok': value.get('ok', not bool(value.get('error')) and value.get('status') == 'queued'),
-                'status': value.get('status'), 'note': 'Get the teammate result with teammate_check.'}
+                'status': value.get('status'), 'note': 'Get the result with subagent_wait.'}
 
     @staticmethod
     def lane_is_profile(lane):
@@ -257,4 +258,4 @@ class HermesHost:
     def store_factory():
         from plugins.plugin_storage import plugin_db
         from .teammates_store import Store
-        return Store(plugin_db('hermes-teammates'))
+        return Store(plugin_db('hermes-subagents'))
