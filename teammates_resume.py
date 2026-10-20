@@ -24,6 +24,7 @@ from typing import Optional
 TERMINAL_STATES = {'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'CANCELLED'}
 MAX_RESULT_CHARS = 32_000
 MAX_RETAINED = 64  # finished resume records (and their transcripts) kept per process
+RETAIN_RECENT_SECONDS = 300  # never evict a run that finished this recently (its monitor may not have read it)
 
 
 class ResumeUnavailable(Exception):
@@ -110,16 +111,32 @@ class HermesInternals:
         return bool(request_hard_interrupt(child, f'Subagent cancellation requested: {str(reason)[:500]}',
                                            tool_reason='subagent cancellation requested'))
 
-    def discard(self, child):
-        """Release a rebuilt child that will never run (its session DB handle, client and parent registration)."""
+    def discard(self, child, parent=None):
+        """Release a rebuilt child that will never run: detach it from the parent (else the parent keeps reporting an
+        active subagent), pair its subagent_start with a subagent_stop, and close it (session DB handle, client)."""
+        if parent is not None:
+            try:
+                from tools.delegate_tool_child_run import _detach_child
+                _detach_child(parent, child)
+            except Exception:
+                pass
+            try:
+                from hermes_cli.lifecycle import invoke_hook
+                invoke_hook('subagent_stop', parent_session_id=getattr(parent, 'session_id', None),
+                            parent_turn_id=getattr(parent, '_current_turn_id', '') or '',
+                            child_session_id=getattr(child, 'session_id', None), child_role='leaf',
+                            child_summary=None, child_status='cancelled', tool_call_history=[], duration_ms=0)
+            except Exception:
+                pass
         try:
             child.close()
         except Exception:
             pass
 
     def load_transcript(self, parent, child_session_id):
-        """(messages, system_prompt) a finished child persisted, read the way `hermes chat --resume` reads them,
-        including the hop to the live tip when context compression moved the child to a continuation session."""
+        """(messages, system_prompt) a finished child persisted, read the way `hermes chat --resume` reads them.
+        A child that compressed its context moved to a continuation session, which Hermes's lineage helpers do not
+        follow for delegate children; its stored transcript is stale, so that case refuses (digest instead)."""
         parent_db = getattr(parent, '_session_db', None)
         if parent_db is None or not child_session_id:
             raise ResumeUnavailable('the parent session has no session database')
@@ -130,12 +147,11 @@ class HermesInternals:
         path = getattr(parent_db, 'db_path', None)
         db = acquire(path) if path is not None else acquire()
         try:
-            resolve = getattr(db, 'resolve_resume_session_id', None)
-            if not callable(resolve):
-                raise ResumeUnavailable('this Hermes build cannot follow compressed sessions')
-            session_id = resolve(child_session_id) or child_session_id
-            messages = db.get_messages_as_conversation(session_id, repair_alternation=True)
-            row = db.get_session(session_id) or {}
+            row = db.get_session(child_session_id) or {}
+            if row.get('end_reason') == 'compression':
+                raise ResumeUnavailable('the subagent compressed its context during the run, so its stored '
+                                        'transcript is stale')
+            messages = db.get_messages_as_conversation(child_session_id, repair_alternation=True)
         finally:
             release_or_close(db)
         return messages, row.get('system_prompt')
@@ -203,11 +219,11 @@ class ResumeRunner:
             problem = 'Hermes did not assign the rebuilt child an identity'
         elif model and getattr(child, 'model', model) != model:
             problem = f"the route now resolves to model {getattr(child, 'model', None)!r}, not {model!r}"
-        elif expected_provider and getattr(child, 'provider', None) not in (None, expected_provider):
+        elif expected_provider and (getattr(child, 'provider', None) or None) != expected_provider:
             problem = (f"the route now resolves to provider {getattr(child, 'provider', None)!r}, not "
                        f'{expected_provider!r} (the provider changed since the run)')
         if problem:
-            self.internals.discard(child)
+            self.internals.discard(child, parent)
             raise ResumeUnavailable(problem)
         # Restoring the exact bytes skips the rebuild (turn_context: only a None prompt is rebuilt).
         child._cached_system_prompt = system_prompt
@@ -222,12 +238,17 @@ class ResumeRunner:
         def run_conversation(*args, **kwargs):
             # Only the first turn replays the earlier conversation; a later turn (Hermes's output-schema retry)
             # continues the child's own state like any other child's.
-            if replay[0]:
+            first = replay[0]
+            if first:
                 replay[0] = False
                 kwargs.setdefault('conversation_history', [dict(message) for message in history])
             output = original(*args, **kwargs)
             if isinstance(output, dict) and isinstance(output.get('messages'), list):
-                record.transcript = _conversation(output['messages'])
+                turn = _conversation(output['messages'])
+                with self._lock:
+                    known = record.transcript or []
+                    # A later turn may return only its own messages; extend instead of replacing the conversation.
+                    record.transcript = turn if first or turn[:len(known)] == known else known + turn
             return output
 
         child.run_conversation = run_conversation
@@ -235,7 +256,14 @@ class ResumeRunner:
             self._records[subagent_id] = record
             self._by_run[run_id] = subagent_id
             self._trim()
-        record.future = self._executor.submit(contextvars.copy_context().run, self._run, record, message)
+        try:
+            record.future = self._executor.submit(contextvars.copy_context().run, self._run, record, message)
+        except Exception as exc:  # e.g. interpreter shutdown: roll back so nothing is left PENDING forever
+            with self._lock:
+                self._records.pop(subagent_id, None)
+                self._by_run.pop(run_id, None)
+            self.internals.discard(child, parent)
+            raise ResumeUnavailable(f'cannot schedule the follow-up: {exc}') from exc
         return handle
 
     def _run(self, record, message):
@@ -247,7 +275,7 @@ class ResumeRunner:
                     record.state = 'RUNNING'
                 record.started_at = time.time()
             if cancelled_before_start:
-                self.internals.discard(record.child)
+                self.internals.discard(record.child, record.parent)
                 state, fields = 'CANCELLED', dict(error_message='cancelled before it started')
             else:
                 raw = self.internals.run_child(message, record.child, record.parent)
@@ -288,7 +316,10 @@ class ResumeRunner:
             return self._records.get(subagent_id)
 
     def _trim(self):
-        finished = [key for key, record in self._records.items() if record.state in TERMINAL_STATES]
+        # Beyond the cap, evict only runs that finished a while ago: a monitor may not have read a recent result.
+        cutoff = time.time() - RETAIN_RECENT_SECONDS
+        finished = [key for key, record in self._records.items() if record.state in TERMINAL_STATES
+                    and record.result is not None and (record.result.completed_at or 0) < cutoff]
         for key in finished[:max(0, len(self._records) - MAX_RETAINED)]:
             record = self._records.pop(key)
             self._by_run.pop(record.handle.run_id, None)
@@ -310,7 +341,8 @@ class ResumeRunner:
     def result(self, handle):
         record = self._record(handle)
         if record is None:
-            handle = handle if isinstance(handle, ResumeHandle) else ResumeHandle.from_dict(dict(handle))
+            # Duck-typed: after a plugin reload the handle may come from the previous module's class.
+            handle = ResumeHandle.from_dict(handle) if isinstance(handle, dict) else handle
             return ResumeResult(handle, 'UNKNOWN', False)
         if record.result is not None:
             return record.result

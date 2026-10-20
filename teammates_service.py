@@ -815,8 +815,14 @@ class TeammatesService:
             if not reply['ok'] and reply['error'] == 'resume_unavailable':
                 skipped, reply = reply['message'], None
         if reply is None:
-            # Keep the spawn's toolset narrowing: a digest follow-up must not widen what the run was allowed.
+            # Keep the spawn's toolset narrowing: a digest follow-up must not widen what the run was allowed,
+            # and it follows any narrowing the operator applied to the entry since.
             narrowed = (json.loads(row['launch_json']) if row.get('launch_json') else {}).get('allowed_toolsets')
+            entry_toolsets = (config['teammates'].get(row['teammate']) or {}).get('toolsets')
+            if narrowed and entry_toolsets is not None:
+                narrowed = [name for name in narrowed if name in entry_toolsets]
+                if not narrowed:
+                    return error('toolsets_not_allowed', f"{row['teammate']} no longer allows any toolset this run had")
             with _admission_locks[stripe]:
                 reply = self._assign(session_id, row['teammate'], message, None, True, None, parent_agent,
                                      toolsets=list(narrowed) if narrowed else None,

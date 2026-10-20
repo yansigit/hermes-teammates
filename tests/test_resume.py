@@ -41,12 +41,15 @@ class FakeInternals:
         self.builds, self.children, self.steers, self.interrupts, self.loads = [], [], [], [], []
         self.interrupted_children = []
         self.resolved_model = self.resolved_provider = None
+        self.inherited_provider = 'fake'  # like Hermes: no route -> the parent's resolved provider, never None
         self.transcript = (TRANSCRIPT, SYSTEM)
         self.gate = None
 
     def build_child(self, parent, launch, model, provider):
         self.builds.append(dict(launch=launch, model=model, provider=provider))
-        child = FakeChild(f'sa-resume-{len(self.builds)}', self.resolved_model or model, self.resolved_provider or provider,
+        child = FakeChild(f'sa-resume-{len(self.builds)}', self.resolved_model or model,
+                          (provider or self.inherited_provider) if self.resolved_provider is None
+                          else self.resolved_provider,
                           f'child-session-{len(self.builds)}')
         child.gate = self.gate
         self.children.append(child)
@@ -67,7 +70,7 @@ class FakeInternals:
             self.gate.set()
         return True
 
-    def discard(self, child):
+    def discard(self, child, parent=None):
         child.close()
 
     def load_transcript(self, parent, child_session_id):
@@ -429,23 +432,120 @@ def test_digest_fallback_keeps_the_spawns_narrowed_toolsets(resume_rig):
     assert rig.lifecycle.requests[-1].allowed_toolsets == ('file',)
 
 
-def test_load_transcript_follows_the_compression_chain(monkeypatch):
-    import hermes_state_registry
+def _real_db(tmp_path):
+    from hermes_state_registry import acquire
+    return acquire(tmp_path / 'state.db')
+
+
+def test_load_transcript_reads_a_finished_child_from_the_real_session_db(tmp_path):
+    from hermes_state_registry import release_or_close
     from hermes_teammates.teammates_resume import HermesInternals
-    reads = []
-    class DB:
-        def resolve_resume_session_id(self, session_id):
-            return 'tip-after-compression' if session_id == 'original' else session_id
-        def get_messages_as_conversation(self, session_id, **kwargs):
-            reads.append(session_id)
-            return TRANSCRIPT
-        def get_session(self, session_id):
-            return {'system_prompt': f'prompt of {session_id}'}
-    monkeypatch.setattr(hermes_state_registry, 'acquire', lambda *a: DB())
-    monkeypatch.setattr(hermes_state_registry, 'release_or_close', lambda db: None)
-    parent = SimpleNamespace(_session_db=SimpleNamespace(db_path='x.db'))
-    messages, system = HermesInternals().load_transcript(parent, 'original')
-    assert reads == ['tip-after-compression'] and system == 'prompt of tip-after-compression'
+    db = _real_db(tmp_path)
+    try:
+        db.create_session('child', 'subagent', model_config={'_delegate_from': 'parent'})
+        db.update_system_prompt('child', SYSTEM)
+        db.append_message('child', 'user', 'Read a.py.')
+        db.append_message('child', 'assistant', 'a.py defines a().')
+        db.end_session('child', 'agent_close')
+        messages, system = HermesInternals().load_transcript(SimpleNamespace(_session_db=db), 'child')
+    finally:
+        release_or_close(db)
+    assert system == SYSTEM and [m['content'] for m in messages] == ['Read a.py.', 'a.py defines a().']
+
+
+def test_a_compressed_child_is_not_resumed_from_a_stale_transcript(tmp_path):
+    from hermes_state_registry import release_or_close
+    from hermes_teammates.teammates_resume import HermesInternals, ResumeUnavailable
+    db = _real_db(tmp_path)
+    try:
+        db.create_session('child', 'subagent', model_config={'_delegate_from': 'parent'})
+        db.update_system_prompt('child', SYSTEM)
+        db.append_message('child', 'user', 'long task')
+        db.end_session('child', 'compression')  # Hermes rotated the child to a continuation session
+        with pytest.raises(ResumeUnavailable, match='compress'):
+            HermesInternals().load_transcript(SimpleNamespace(_session_db=db), 'child')
+    finally:
+        release_or_close(db)
+
+
+def test_discard_detaches_the_child_from_its_parent_and_closes_it():
+    from hermes_teammates.teammates_resume import HermesInternals
+    child = FakeChild('sa', 'm', 'p', 's')
+    parent = SimpleNamespace(_active_children=[child], session_id='parent')
+    HermesInternals().discard(child, parent)
+    assert parent._active_children == [] and child.closed
+
+
+def test_provider_check_does_not_wave_through_an_unset_provider():
+    from hermes_teammates.teammates_resume import ResumeRunner, ResumeUnavailable
+    internals = FakeInternals()
+    internals.resolved_provider = ''
+    with pytest.raises(ResumeUnavailable, match='provider'):
+        ResumeRunner(internals).start(parent=object(), launch={'goal': 'g'}, model='m', provider=None,
+                                      expected_provider='anthropic', transcript=TRANSCRIPT, system_prompt=SYSTEM,
+                                      message='x', run_id='r')
+
+
+def test_a_failed_submit_rolls_the_record_back():
+    from hermes_teammates.teammates_resume import ResumeRunner, ResumeUnavailable
+    internals = FakeInternals()
+    runner = ResumeRunner(internals)
+    runner._executor.shutdown()
+    with pytest.raises(ResumeUnavailable):
+        runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                     system_prompt=SYSTEM, message='x', run_id='r')
+    assert runner._records == {} and runner.transcript('r') is None and internals.children[0].closed
+
+
+def test_a_later_turn_extends_the_transcript_instead_of_replacing_it():
+    from hermes_teammates.teammates_resume import ResumeRunner
+    internals = FakeInternals()
+    def run_child(message, child, parent):
+        child.run_conversation(user_message=message)
+        child.run_conversation(user_message='schema retry')  # returns only its own turn (no history passed)
+        return {'status': 'completed', 'summary': 'ok'}
+    internals.run_child = run_child
+    runner = ResumeRunner(internals)
+    handle = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                          system_prompt=SYSTEM, message='x', run_id='r')
+    runner.wait(handle, timeout_seconds=5)
+    messages, _ = runner.transcript('r')
+    assert messages[:4] == TRANSCRIPT
+    assert [m['content'] for m in messages[4:]] == ['x', 'done: x', 'schema retry', 'done: schema retry']
+
+
+def test_recently_finished_records_are_not_evicted_before_their_monitor_reads_them(monkeypatch):
+    from hermes_teammates import teammates_resume
+    monkeypatch.setattr(teammates_resume, 'MAX_RETAINED', 1)
+    runner = teammates_resume.ResumeRunner(FakeInternals())
+    first = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                         system_prompt=SYSTEM, message='x', run_id='r1')
+    runner.wait(first, timeout_seconds=5)
+    second = runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                          system_prompt=SYSTEM, message='y', run_id='r2')
+    runner.wait(second, timeout_seconds=5)
+    runner.start(parent=object(), launch={'goal': 'g'}, model='m', provider=None, transcript=TRANSCRIPT,
+                 system_prompt=SYSTEM, message='z', run_id='r3')
+    assert runner.status(first).state == 'SUCCEEDED'  # finished seconds ago: kept
+
+
+def test_result_accepts_a_plain_dict_handle_for_a_forgotten_run():
+    from hermes_teammates.teammates_resume import ResumeRunner
+    result = ResumeRunner(FakeInternals()).result({'subagent_id': 'gone', 'run_id': 'r', 'backend': 'resume'})
+    assert result.terminal_state == 'UNKNOWN' and not result.ready
+
+
+def test_digest_fallback_intersects_the_spawn_toolsets_with_a_narrowed_roster(resume_rig):
+    rig = resume_rig
+    rig.raw['teammates']['worker']['toolsets'] = ['file', 'web']
+    rig.raw['followup_mode'] = 'digest'
+    from test_v020 import result
+    run_id = rig.service.assign('owner', 'worker', 'g', toolsets=['file', 'web'])['run_id']
+    rig.service.finalize(run_id, result(rig, run_id))
+    rig.lifecycle.state = 'RUNNING'
+    rig.raw['teammates']['worker']['toolsets'] = ['file']  # the operator narrowed the entry since
+    assert rig.service.followup('owner', run_id, 'x')['ok']
+    assert rig.lifecycle.requests[-1].allowed_toolsets == ('file',)
 
 
 def test_runner_is_shared_across_plugin_reloads():
@@ -461,8 +561,3 @@ def test_roster_file_with_both_keys_reports_it(tmp_path):
     assert roster == {'a': {}} and 'teammates' in problem
 
 
-def test_discard_closes(monkeypatch):
-    from hermes_teammates.teammates_resume import HermesInternals
-    child = FakeChild('sa', 'm', 'p', 's')
-    HermesInternals().discard(child)
-    assert child.closed

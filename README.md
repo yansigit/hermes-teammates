@@ -91,7 +91,10 @@ Other settings: `max_live_runs` (default 4 per conversation), `followup_context_
   price, but the child keeps its full context.
 - `digest`: never resume (upstream's behavior).
 
-If a follow-up cannot resume, it falls back to a digest and says why in `resume_skipped`. Replies carry
+If a follow-up cannot resume, it falls back to a digest and says why in `resume_skipped`. That happens when the
+route now resolves to a different model or provider, when the child compressed its context during the run (its
+stored transcript is then stale), or when the transcript or Hermes internals are unavailable. A digest follow-up
+keeps the spawn's toolset narrowing. Replies carry
 `followup_mode` and `parent_run_id`; finished rows carry `tokens_input`, `tokens_output`, `tokens_cache_read` and
 `tokens_cache_write`.
 
