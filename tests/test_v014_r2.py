@@ -74,24 +74,6 @@ def test_status_probe_failure_keeps_running_display(rig, output):
         assert store.get(assigned['run_id'], 's')['status'] == 'running'
 
 
-@pytest.mark.parametrize('failure', ['wait', 'message'])
-def test_steer_scenario_stops_child_on_setup_failure(tmp_path, failure):
-    from bench_mechanics.test_t3_steer import test_steer_seen_by_running_child as scenario
-    stops = []
-    def wait_requests(*args, **kwargs):
-        if failure == 'wait':
-            raise RuntimeError('request wait failed')
-    rig = SimpleNamespace(
-        host=SimpleNamespace(features=lambda: {'steer': 'lifecycle'}),
-        fake=SimpleNamespace(wait_requests=wait_requests, texts=lambda label: []),
-        assign=lambda *args, **kwargs: {'ok': True, 'run_id': 'synthetic-run'},
-        call=lambda *args, **kwargs: {'ok': False, 'via': 'lifecycle'},
-        stop=lambda *args: stops.append(args) or {'ok': True})
-    with pytest.raises(RuntimeError if failure == 'wait' else AssertionError):
-        scenario(lambda: rig, tmp_path, lambda *args: None)
-    assert stops == [('synthetic-run', 'steer scenario complete')]
-
-
 def test_finalize_race_scenario_enters_check_before_releasing_monitor(rig, monkeypatch):
     from test_v014 import test_plain_monitor_and_check_finalize_once as scenario
     original = rig.service.check

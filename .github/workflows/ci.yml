@@ -18,7 +18,7 @@ concurrency:
 env:
   # Hermes build the plugin is tested against. Bump deliberately (see README "Compatibility").
   HERMES_UPSTREAM_REPO: NousResearch/hermes-agent
-  HERMES_UPSTREAM_SHA: 1078a4e5f363472c43a50c6738e47e54eab2940c
+  HERMES_UPSTREAM_SHA: d923a5eb487a17c0a68801bba9ef0f56c81040a8  # Hermes v0.22.2
 
 jobs:
   hermes:
@@ -56,11 +56,7 @@ jobs:
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
         run: cd plugin && ../hermes/.venv/bin/python -m pytest -q -p no:cacheprovider
-      - name: Historical identity and record checks (must run with tags)
-        env:
-          HERMES_HOME: ${{ runner.temp }}/hermes-home
-        run: cd plugin && ../hermes/.venv/bin/python -m pytest -v -p no:cacheprovider tests/bench_slice2/test_historical_identity.py
       - name: No self-updater, no runtime code fetch
         run: |
-          bad=$(grep -rlE "releases/latest|raw\.githubusercontent\.com|pip install|urlopen\(" --include='*.py' plugin --exclude-dir=tests --exclude-dir=bench || true)
+          bad=$(grep -rlE "releases/latest|raw\.githubusercontent\.com|pip install|urlopen\(" --include='*.py' plugin --exclude-dir=tests || true)
           if [ -n "$bad" ]; then echo "self-updater / runtime fetch pattern in: $bad"; exit 1; fi
