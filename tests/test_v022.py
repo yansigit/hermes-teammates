@@ -48,9 +48,9 @@ def test_actual_tool_failure_keeps_error_and_detection(rig):
     from agent.display import _detect_tool_failure
     from hermes_teammates.teammates_tools import handler
     reply = handler('subagent_spawn', lambda: rig.service)(
-        {'model': 'missing', 'goal': 'synthetic goal'}, session_id='owner')
+        {'model': '', 'goal': 'synthetic goal'}, session_id='owner')
     value = json.loads(reply)
-    assert value['ok'] is False and value['error'] == 'unknown_teammate'
+    assert value['ok'] is False and value['error'] == 'invalid_model'
     assert _detect_tool_failure('subagent_spawn', reply)[0] is True
     run_id = start(rig)
     rig.lifecycle.state = 'FAILED'

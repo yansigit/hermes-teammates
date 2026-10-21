@@ -179,6 +179,7 @@ def test_explain_teammate_readonly_config_and_tool(rig, monkeypatch):
         reads.append(True)
         return global_values
     monkeypatch.setattr(global_config, 'load_config_readonly', readonly)
+    rig.host.features = lambda: {'reasoning_effort': False, 'route': None, 'steer': 'no', 'follow_up': 'digest'}
     rig.raw['teammates']['worker'].update(toolsets=['file'], route='requested', reasoning_effort='high')
     # The explain view is operator-side now (no roster tool); it stays bounded JSON.
     row = json.loads(json.dumps(rig.service.roster('owner', False, 'worker')))

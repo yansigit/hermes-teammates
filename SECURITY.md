@@ -23,24 +23,30 @@ Do not open a public issue for them.
 
 ## Model
 
-hermes-subagents is an in-agent plugin (a fork of Hermes Teammates). It adds five tools and one slash command. It
+hermes-subagents is an in-agent plugin (a fork of Hermes Teammates). It adds six tools and one slash command. It
 starts subagents through Hermes's public plugin lifecycle API (`ctx.subagent_lifecycle`). Resumed follow-ups rebuild
 a finished child with Hermes's own (private) child builder and run it through Hermes's own child runner, with the
 same credentials resolution, toolset checks and lifecycle hooks; that code is in `teammates_resume.py`.
 
-- **Who decides what a subagent may be.** Roster entries are defined by the operator in
-  `plugins.entries.hermes-subagents.settings`. The model can only pick an entry by name. It cannot choose a
-  provider, model, route or reasoning level outside the roster, or widen toolsets (`subagent_spawn`'s `toolsets` only
-  narrow). A resumed follow-up reuses the run's recorded launch and model; it refuses to resume if the route now
-  resolves to a different model.
+- **Model selection is deliberately unrestricted within Hermes routing.** The model may choose an exact model ID
+  and configured Hermes provider on each spawn. The provider resolves its own credentials and rejects unavailable
+  models. There is no model allowlist, catalog-membership gate or price ceiling. Optional roster entries are
+  convenience presets, not a security boundary; explicit `provider` bypasses preset lookup. Model guidance may
+  live in prompts/AGENTS.md. No tool argument accepts credentials, a base URL or arbitrary endpoint.
+- **Follow-ups.** Resume and digest paths use the recorded model/provider and preserve toolset narrowing. Preset
+  edits cannot redirect them; a narrowed preset forces a narrowed digest rather than a wider resumed child.
+  Digest context follows this run's parent chain, not unrelated jobs on the same model.
 - **Toolsets.**
-  - A teammate's `toolsets` are passed to Hermes as `allowed_toolsets`.
+  - Spawn `toolsets` and an optional used preset's cap are passed as Hermes `allowed_toolsets`. A preset's cap
+    applies to that preset, not to direct spawns on the same model.
   - Hermes rejects any set that would widen the parent's tools, and it keeps its own unsafe-tool block for every
     subagent.
   - By default Hermes adds the parent's MCP toolsets back to a teammate with narrowed `toolsets` (`delegation.inherit_mcp_toolsets: true`); set it to `false` for a strict intersection.
   - Absent or null `toolsets` inherit. Unknown keys, wrong field types or invalid/empty `toolsets` refuse launch.
-- **Credentials.** Hermes supplies the parent's credentials, or the operator-configured provider's when route is
-  supported. The model cannot choose credentials. The plugin never reads, stores or logs API keys or tokens.
+- **Credentials.** Hermes resolves the selected provider's credentials, or inherits the parent's route when no
+  provider/preset route is set. The model cannot supply credentials. Catalog and runtime helpers handle secrets;
+  the plugin never serializes keys, tokens, headers or endpoint URLs into discovery replies or its ledger. An
+  explicit provider is refused if the host cannot honor per-launch routing; it is never silently ignored.
 - **Admission.** The plugin refuses nested teammates. It also refuses new runs while Hermes's
   delegation spawn pause is on, when it can read that flag, and above a per-conversation cap on live runs.
 - **Ownership.**
@@ -51,7 +57,8 @@ same credentials resolution, toolset checks and lifecycle hooks; that code is in
 - **Data at rest.**
   - The ledger is a SQLite file at `<HERMES_HOME>/plugin-data/hermes-subagents/data.db`, per profile.
   - It holds each run's goal, status, summary or error (clipped), provider/model names, timestamps, the launch
-    request (goal, context and toolsets, so a follow-up can rebuild the child) and the child session id.
+    request (goal, context and toolsets, so a follow-up can rebuild the child), initial optional-preset definition
+    and the child session id.
   - It holds no transcripts, hidden reasoning or credentials. Resumed conversations are kept in process memory
     only; the first follow-up reads the child's transcript from Hermes's own session DB.
   - Remove the file to erase the history.
@@ -62,15 +69,17 @@ same credentials resolution, toolset checks and lifecycle hooks; that code is in
   - On failure or stop it blocks the card with the reason.
   - It never completes a card; acceptance stays with you.
   - It writes only to the board the current Hermes process uses.
-- **Network and code.** The plugin makes no network requests of its own. It does not update itself or fetch
-  code at runtime.
+- **Network and code.** Spawning uses Hermes's configured routes. On-demand model discovery uses Hermes's native
+  inventory/cache helpers, which may refresh catalogs from provider endpoints or models.dev. Raw inventory rows
+  are never returned; replies whitelist IDs and brief metadata and are capped at 16,000 characters. No discovery
+  runs at tool registration. The plugin does not update itself or download code at runtime.
 
 ## Known limits
 
 - Steering uses Hermes's lifecycle `steer` on builds with NousResearch/hermes-agent#137167, and otherwise
   `delegate_task`'s steer with the parent agent bound to the current turn. Either way it is available only when the
-  plugin runs in-process. Under `plugins.isolation: host`, every tool except the roster
-  refuses with `unsupported_isolation`.
+  plugin runs in-process. Spawning/resuming under `plugins.isolation: host` is refused with
+  `unsupported_isolation`; discovery depends on the Hermes inventory seams available to the host.
 - Plugin reloads in the same process preserve live runs. After a Hermes restart, first plugin use marks unfinished
   runs from dead processes `interrupted`; they are never re-run. A lane card claimed by
   such a run is released by Kanban's claim TTL.

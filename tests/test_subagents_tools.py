@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-TOOLS = {'subagent_spawn', 'subagent_followup', 'subagent_wait', 'subagent_steer', 'subagent_stop'}
+TOOLS = {'subagent_models', 'subagent_spawn', 'subagent_followup', 'subagent_wait', 'subagent_steer', 'subagent_stop'}
 
 
 def _register(plugin, raw):
@@ -24,7 +24,17 @@ def _register(plugin, raw):
     return tools, commands
 
 
-def test_registers_five_subagent_tools_in_subagents_toolset(plugin):
+def test_empty_roster_is_not_described_as_a_missing_requirement(plugin):
+    tools, commands = _register(plugin, {})
+    description = tools['subagent_spawn']['schema']['description']
+    assert 'No roster required' in description and 'subagent_models' in description
+    assert 'No models are configured yet' not in description
+    assert 'provider' in tools['subagent_spawn']['schema']['parameters']['properties']
+    text = commands['subagents']['handler']('')
+    assert 'No preset required' in text and 'Add them under' not in text
+
+
+def test_registers_six_subagent_tools_in_subagents_toolset(plugin):
     tools, commands = _register(plugin, {'models': {'flash': {'description': 'cheap and fast'}}})
     assert set(tools) == TOOLS
     assert {spec['toolset'] for spec in tools.values()} == {'subagents'}

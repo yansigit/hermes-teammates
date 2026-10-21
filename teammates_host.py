@@ -113,6 +113,11 @@ class HermesHost:
         # Not configured_cache_ttl(): it is None for 'auto' and unknown values, which keep caching on.
         return None if prompt_caching_disabled_from_config() else 300
 
+    @staticmethod
+    def discover_models(**kwargs):
+        from .teammates_models import discover
+        return discover(**kwargs)
+
     def launch_request(self, **kwargs):
         return self.request_class()(**kwargs)
 

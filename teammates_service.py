@@ -14,7 +14,7 @@ import threading
 import time
 from uuid import uuid4
 
-from .teammates_config import parse
+from .teammates_config import MODEL_ID, PROVIDER_ID, parse
 from .teammates_resume import ResumeUnavailable
 from .teammates_store import INSTANCE_ID
 
@@ -210,7 +210,7 @@ class TeammatesService:
 
     @safe
     def assign(self, session_id, teammate, goal, context=None, follow_up=False,
-               kanban_task=None, parent_agent=None, wait_seconds=0, toolsets=None):
+               kanban_task=None, parent_agent=None, wait_seconds=0, toolsets=None, provider=None):
         if wait_seconds is None:  # an explicit null from the model means the default
             wait_seconds = 0
         if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 300:
@@ -218,7 +218,7 @@ class TeammatesService:
         stripe = int.from_bytes(hashlib.sha256(str(session_id).encode()).digest()[:8], 'big') % 64
         with _admission_locks[stripe]:
             reply = self._assign(session_id, teammate, goal, context, follow_up, kanban_task, parent_agent,
-                                 toolsets=toolsets)
+                                 toolsets=toolsets, provider=provider)
         return self._maybe_wait(session_id, reply, wait_seconds)
 
     def _maybe_wait(self, session_id, reply, wait_seconds):
@@ -242,22 +242,33 @@ class TeammatesService:
         return row
 
     def _assign(self, session_id, teammate, goal, context, follow_up, kanban_task, parent_agent, *, toolsets=None,
-                extra=None):
+                extra=None, provider=None, definition=None, preset=None):
         if self.host.isolated:
             return error('unsupported_isolation', ISOLATION_MESSAGE)
         if not session_id:
             return error('no_session')
+        if not isinstance(teammate, str) or not MODEL_ID.fullmatch(teammate):
+            return error('invalid_model', 'model must be an exact ID or preset name of 1-512 non-whitespace characters')
+        if provider is not None:
+            if not isinstance(provider, str) or not PROVIDER_ID.fullmatch(provider):
+                return error('invalid_provider', 'provider must be a Hermes provider ID of 1-64 characters, not a URL')
+            if not self.host.features()['route']:
+                return error('unsupported_provider', 'this Hermes build cannot honor per-launch provider selection')
         config = parse(self.config_reader())
-        if teammate in config['invalid_teammates']:
-            return error('config_error', '; '.join(config['invalid_teammates'][teammate]))
-        if teammate not in config['teammates']:
-            return error('unknown_teammate', f"unknown model name {str(teammate)[:64]!r}; configured: "
-                         + (', '.join(config['teammates']) or 'none'))
+        if definition is None:
+            if provider is None and teammate in config['invalid_teammates']:
+                return error('config_error', '; '.join(config['invalid_teammates'][teammate]))
+            # Explicit provider means model is an exact ID, not an alias. Presets are optional.
+            preset = teammate if provider is None and teammate in config['teammates'] else None
+            definition = (config['teammates'][preset] if preset else
+                          dict(model=teammate, route=provider, description='', instructions='', toolsets=None,
+                               reasoning_effort=None))
+        teammate_config = definition
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 12000:
             return error('invalid_goal')
         if kanban_task and not config['kanban']:
             return error('kanban_disabled', 'Kanban is off; set kanban: true in the plugin settings to use it')
-        launch_toolsets = config['teammates'][teammate]['toolsets']
+        launch_toolsets = teammate_config['toolsets']
         if toolsets is not None:
             if (not isinstance(toolsets, list) or not 0 < len(toolsets) <= 24 or
                     not all(isinstance(name, str) and name.strip() for name in toolsets)):
@@ -295,7 +306,6 @@ class TeammatesService:
                         raise RuntimeError('claimed card has no latest run')
                 except Exception as exc:
                     return self._launch_failed(run_id, None, claim, kanban_task, exc)
-        teammate_config = config['teammates'][teammate]
         role_receipt = role_hash(teammate_config)
         try:
             parts = [teammate_config['instructions']]
@@ -307,7 +317,19 @@ class TeammatesService:
                 remaining -= len(f'[… {len(str(context))} characters omitted]') + 2
             if follow_up and config['followup_context_chars']:
                 with self.store_factory() as store:
-                    previous = store.list(session_id, teammate=teammate, terminal=True)
+                    previous = []
+                    if extra and extra.get('parent_run_id'):
+                        # Follow only this run's ancestry, never unrelated runs on the same model/provider.
+                        cursor, seen = extra['parent_run_id'], set()
+                        while cursor and cursor not in seen and len(seen) < 128:
+                            seen.add(cursor)
+                            earlier = store.get(cursor, session_id)
+                            if earlier is None:
+                                break
+                            previous.append(earlier)
+                            cursor = earlier.get('parent_run_id')
+                    else:  # legacy assign(follow_up=True), not the model-facing follow-up tool
+                        previous = store.list(session_id, teammate=teammate, terminal=True)
                 header = ('Previous assignments:\n'
                           'Prior results are quoted verbatim below; continue from them.\n')
                 entries, remaining = [], min(config['followup_context_chars'], remaining) - len(header)
@@ -362,6 +384,7 @@ class TeammatesService:
                        parent_session_key=self.host.completion_target()[0],
                        created_at=self.clock(), role_hash=role_receipt,
                        launch_json=json.dumps(launch_spec), child_session_id=self._child_session_for(handle.subagent_id),
+                       selection_json=json.dumps({'preset': preset, 'definition': teammate_config}),
                        **(extra or {}))
             # In-process the lock covers launch + insert. Across processes the conditional insert
             # rejects the extra run, but its child may already have started and is cancelled at once.
@@ -817,15 +840,29 @@ class TeammatesService:
         if reply is None:
             # Keep the spawn's toolset narrowing: a digest follow-up must not widen what the run was allowed,
             # and it follows any narrowing the operator applied to the entry since.
-            narrowed = (json.loads(row['launch_json']) if row.get('launch_json') else {}).get('allowed_toolsets')
-            entry_toolsets = (config['teammates'].get(row['teammate']) or {}).get('toolsets')
-            if narrowed and entry_toolsets is not None:
-                narrowed = [name for name in narrowed if name in entry_toolsets]
+            launch = json.loads(row['launch_json'] or '{}')
+            selection = json.loads(row.get('selection_json') or '{}')
+            preset = selection.get('preset') if selection else row['teammate']
+            definition = dict(selection.get('definition') or config['teammates'].get(preset) or
+                              dict(description='', instructions='', toolsets=None, reasoning_effort=None))
+            # A changed/removed preset must never change the model or provider of a follow-up.
+            # A generic runtime label cannot pin an inherited custom endpoint (e.g. delegation.base_url).
+            if not launch.get('provider') and row['provider'] == 'custom':
+                return error('followup_route_unavailable',
+                             'the original custom endpoint has no recorded explicit provider; '
+                             'start a new run with an explicit provider ID to keep follow-ups on that route')
+            definition.update(model=row['model'], route=launch.get('provider') or row['provider'] or None)
+            narrowed = launch.get('allowed_toolsets')
+            entry_toolsets = (config['teammates'].get(preset) or {}).get('toolsets')
+            if entry_toolsets is not None:
+                narrowed = (list(entry_toolsets) if narrowed is None else
+                            [name for name in narrowed if name in entry_toolsets])
                 if not narrowed:
                     return error('toolsets_not_allowed', f"{row['teammate']} no longer allows any toolset this run had")
             with _admission_locks[stripe]:
                 reply = self._assign(session_id, row['teammate'], message, None, True, None, parent_agent,
-                                     toolsets=list(narrowed) if narrowed else None,
+                                     toolsets=list(narrowed) if narrowed else None, provider=definition['route'],
+                                     definition=definition, preset=preset,
                                      extra={'parent_run_id': run_id, 'followup_mode': 'digest'})
             if reply.get('ok'):
                 reply = dict(reply, followup_mode='digest', parent_run_id=run_id, resume_skipped=skipped)
@@ -848,10 +885,6 @@ class TeammatesService:
         if self.host.isolated:
             return error('unsupported_isolation', ISOLATION_MESSAGE)
         teammate = row['teammate']
-        if teammate in config['invalid_teammates']:
-            return error('config_error', '; '.join(config['invalid_teammates'][teammate]))
-        if teammate not in config['teammates']:
-            return error('unknown_teammate', f'{teammate!r} is no longer in the roster')
         blocked = self._admission_error(session_id, config)
         if blocked:
             return blocked
@@ -860,6 +893,12 @@ class TeammatesService:
         if row['status'] == 'unknown':
             return error('resume_unavailable', "this run's outcome is unknown")
         launch = json.loads(row['launch_json'])
+        selection = json.loads(row.get('selection_json') or '{}')
+        preset = selection.get('preset') if selection else teammate
+        current_cap = (config['teammates'].get(preset) or {}).get('toolsets')
+        earlier_tools = launch.get('allowed_toolsets')
+        if current_cap is not None and (earlier_tools is None or not set(earlier_tools) <= set(current_cap)):
+            return error('resume_unavailable', 'the preset toolsets were narrowed; start a digest with fewer tools')
         parent = parent_agent if parent_agent is not None else self.host.active_parent()
         run_id = 'tm_' + uuid4().hex[:12]
         try:
@@ -881,7 +920,8 @@ class TeammatesService:
                            instance_id=INSTANCE_ID, pid=os.getpid(),
                            parent_session_key=self.host.completion_target()[0], created_at=self.clock(),
                            role_hash=row['role_hash'], parent_run_id=row['run_id'], followup_mode='resume',
-                           launch_json=row['launch_json'], child_session_id=handle.child_session_id,
+                           launch_json=row['launch_json'], selection_json=row.get('selection_json'),
+                           child_session_id=handle.child_session_id,
                            kanban_task=None, kanban_claim=None)
             with self.store_factory() as store:
                 admitted = store.admit(new_row, config['max_live_runs'])
@@ -895,6 +935,10 @@ class TeammatesService:
         reply = {key: value for key, value in public_row(new_row).items()
                  if key in {'ok', 'run_id', 'teammate', 'status', 'provider', 'model', 'unsupported'}}
         return dict(reply, followup_mode='resume', parent_run_id=row['run_id'])
+
+    @safe
+    def models(self, **kwargs):
+        return self.host.discover_models(**kwargs)
 
     @safe
     def roster(self, session_id, include_runs=True, teammate=None):

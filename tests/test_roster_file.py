@@ -146,7 +146,8 @@ def test_assign_uses_a_teammate_from_the_file(rig):
     (home() / 'teammates.yaml').write_text(ONE, encoding='utf-8')
     _use(rig, {'roster_file': 'teammates.yaml'})
     assert rig.service.assign('s', 'reviewer', 'goal')['ok']
-    assert not rig.service.assign('s', 'worker', 'goal')['ok']  # the config.yaml roster is not merged in
+    assert rig.service.assign('s', 'worker', 'goal')['ok']  # not a preset: treated as an exact model ID
+    assert rig.lifecycle.requests[-1].model == 'worker' and not rig.lifecycle.requests[-1].context
 
 
 def test_registration_reads_the_file_and_no_tool_argument_sets_the_path(plugin):
@@ -156,5 +157,5 @@ def test_registration_reads_the_file_and_no_tool_argument_sets_the_path(plugin):
                           register_tool=lambda **k: tools.update({k['name']: k}),
                           register_command=lambda *a, **k: None)
     plugin.register(ctx)
-    assert 'Models: reviewer' in tools['subagent_spawn']['description']
+    assert 'Optional presets: reviewer' in tools['subagent_spawn']['description']
     assert 'roster_file' not in json.dumps([tool['schema'] for tool in tools.values()])

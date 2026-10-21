@@ -125,7 +125,7 @@ def test_rejected_extra_child_cancelled_and_retained(rig):
 def test_admission_lock_array_is_bounded(rig):
     from hermes_teammates.teammates_service import _admission_locks
     for i in range(1000):
-        assert rig.service.assign(f'unknown-{i}', 'absent', 'goal')['error'] == 'unknown_teammate'
+        assert rig.service.assign(f'unknown-{i}', '', 'goal')['error'] == 'invalid_model'
     assert len(_admission_locks) == 64
 
 

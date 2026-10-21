@@ -56,6 +56,7 @@ def test_session_precedence_and_fallback_json(plugin):
 
 
 def test_roster_current_config_and_bounded_output(rig):
+    rig.host.features = lambda: {'reasoning_effort': False, 'route': None, 'steer': 'no', 'follow_up': 'digest'}
     rig.raw['teammates']['worker'].update(route='requested', reasoning_effort='high')
     rig.service.assign('foreign','worker','secret')
     for index in range(50):
@@ -68,6 +69,6 @@ def test_roster_current_config_and_bounded_output(rig):
 
 def test_assign_description_points_to_the_live_roster(plugin):
     from hermes_teammates.teammates_tools import schema
-    assert 'Models: reviewer; scout.' in schema('subagent_spawn', ['reviewer', 'scout'])['description']
+    assert 'Optional presets: reviewer; scout.' in schema('subagent_spawn', ['reviewer', 'scout'])['description']
     empty = schema('subagent_spawn', [])['description']
-    assert 'Models:' not in empty and 'No models are configured yet.' in empty
+    assert 'Optional presets:' not in empty and 'No roster required' in empty

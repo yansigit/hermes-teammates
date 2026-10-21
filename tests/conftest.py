@@ -96,7 +96,7 @@ def rig(plugin, tmp_path):
     host = HermesHost(ctx)
     host.spawn_paused = lambda: False
     host.lane_is_profile = lambda lane: False
-    host.features = lambda: {'reasoning_effort': False, 'route': None,
+    host.features = lambda: {'reasoning_effort': False, 'route': 'provider',
                              'steer': 'no', 'follow_up': 'digest'}
     path = tmp_path / 'runs.db'
     def factory():

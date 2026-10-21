@@ -17,15 +17,27 @@ _KANBAN_TASK = _p('string', 'Id of a Kanban card on the subagents lane (for exam
                             'while the subagent works and moved to review (or blocked) when the run ends.')
 
 SPECS = {
+    'subagent_models': (
+        'Discover available Hermes providers and their best-known model catalogs on demand. No roster is required. '
+        'Listings use Hermes caches/curated fallbacks, not an access guarantee. No model inference is performed.',
+        {'provider': _p('string', 'Optional provider ID; list its models. Omit both provider and query to list providers.'),
+         'query': _p('string', 'Optional case-insensitive model-ID substring; searches across providers when provider is omitted.'),
+         'limit': _p('integer', 'Maximum entries to return (1-100).', minimum=1, maximum=100, default=25),
+         'offset': _p('integer', 'Start at this result offset.', minimum=0, default=0)}, []),
     'subagent_spawn': (
         'Start a subagent on a model you pick by name, for a self-contained task. Pick the cheapest model that '
         'can do the task well; keep strong models for hard work. Returns a run_id at once while the subagent '
-        'works in the background; get the result with subagent_wait, or pass wait_seconds.',
-        {'model': _p('string', 'Model name, from the list in this description.'),
+        'works in the background; get the result with subagent_wait, or pass wait_seconds. No roster required. '
+        'Use subagent_models when unsure of model IDs or capabilities. Follow model preferences from your '
+        'prompt/AGENTS.md; provider catalogs and remembered prices can be incomplete.',
+        {'model': _p('string', 'Exact model ID, or an optional preset name when provider is omitted.', minLength=1, maxLength=512),
+         'provider': _p('string', 'Optional Hermes provider ID (for example anthropic, openai-codex or '
+                                 'openrouter). With provider, model is always an exact ID. Otherwise use a '
+                                 'matching preset, or inherit Hermes delegation/parent routing.', minLength=1, maxLength=64),
          'goal': _p('string', 'The complete task. The subagent does not see this conversation, so include what it needs.'),
          'context': _p('string', 'Optional extra facts, file paths or constraints.'),
          'toolsets': _p('array', 'Optional: limit the subagent to these toolsets (for example ["file"]). Fewer tools '
-                                 'cost less. Cannot add toolsets the model entry does not allow.',
+                                 'cost less. Narrows inherited tools; an optional preset may narrow them further.',
                         items={'type': 'string', 'minLength': 1}, minItems=1, maxItems=24, uniqueItems=True),
          'wait_seconds': _WAIT},
         ['model', 'goal']),
@@ -61,6 +73,7 @@ SPECS = {
 # Hermes catalogs only the first sentence (at most 60 characters) of deferred tools. Keep the
 # conditional bridge flow there, and a valid single-call envelope in the schema.
 _BRIDGE_EXAMPLES = {
+    'subagent_models': ('Discover models', {}),
     'subagent_spawn': ('Start a subagent', {'model': 'MODEL_NAME', 'goal': 'Summarize the requested file.'}),
     'subagent_followup': ('Continue a run', {'run_id': 'RUN_ID', 'message': 'Now apply the fix.'}),
     'subagent_wait': ('Wait for runs', {'run_ids': ['RUN_ID']}),
@@ -73,7 +86,7 @@ def _roster_text(models):
     for entry in models:
         name, description = (entry, '') if isinstance(entry, str) else entry
         entries.append(f'{name} ({description})' if description else name)
-    return ' Models: ' + '; '.join(entries) + '.' if entries else ' No models are configured yet.'
+    return ' Optional presets: ' + '; '.join(entries) + '.' if entries else ' No optional presets configured.'
 
 
 def schema(name, models=(), *, kanban=False):
@@ -90,7 +103,7 @@ def schema(name, models=(), *, kanban=False):
                        'Replace example values; use one entry per call. When directly listed, call normally. '
                        + description)
     if name == 'subagent_spawn':
-        description += _roster_text(models) + ' Models added later also work by name.'
+        description += _roster_text(models)
         if kanban:
             properties['kanban_task'] = _KANBAN_TASK
     return {'name': name, 'description': description,
@@ -111,11 +124,14 @@ def handler(name, get_service):
         try:
             service, session_id = get_service(), current_session_id(kwargs)
             parent_agent = kwargs.get('parent_agent')
-            if name == 'subagent_spawn':
+            if name == 'subagent_models':
+                value = service.models(provider=args.get('provider'), query=args.get('query'),
+                                       limit=args.get('limit', 25), offset=args.get('offset', 0))
+            elif name == 'subagent_spawn':
                 value = service.assign(session_id, args.get('model'), args.get('goal'),
                                        context=args.get('context'), kanban_task=args.get('kanban_task'),
                                        parent_agent=parent_agent, wait_seconds=args.get('wait_seconds', 0),
-                                       toolsets=args.get('toolsets'))
+                                       toolsets=args.get('toolsets'), provider=args.get('provider'))
             elif name == 'subagent_followup':
                 value = service.followup(session_id, args.get('run_id'), args.get('message'),
                                          wait_seconds=args.get('wait_seconds', 0), parent_agent=parent_agent)
@@ -149,8 +165,9 @@ def render_roster(value):
         lines.append('No models in the roster file.' +
                      (' See the config problems below.' if value.get('config_errors') else ''))
     else:
-        lines.append('No models configured. Add them under '
-                     'plugins.entries.hermes-subagents.settings.models in config.yaml.')
+        lines.append('No optional model presets configured.')
+    lines.append('No preset required: subagent_spawn accepts model + provider directly. '
+                 'Use subagent_models to discover providers/models.')
     for teammate in teammates:
         toolsets = ', '.join(teammate.get('toolsets') or []) or 'inherits parent'
         route = ' via '.join(part for part in (teammate.get('model'), teammate.get('route')) if part) or 'parent model'

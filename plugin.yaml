@@ -1,6 +1,6 @@
 name: hermes-subagents
 version: 2.0.0-dev
-description: "Subagents on a model you pick by name, with follow-ups that resume the same child conversation (and its prompt cache) on the same model. Fork of hermes-teammates 1.1.0."
+description: "Subagents on any configured Hermes model/provider, with optional named presets, with follow-ups that resume the same child conversation (and its prompt cache) on the same model. Fork of hermes-teammates 1.1.0."
 author: yansigit (fork of hermes-teammates by Electric Sheep)
 kind: standalone
 manifest_version: 2
@@ -10,7 +10,7 @@ license: MIT
 homepage: https://github.com/yansigit/hermes-teammates
 tags: [delegation, subagents, model-routing, prompt-cache]
 config_schema:
-  models: {type: dict, default: {}, label: "Models", description: "Roster of model names the agent may pick: {\"flash\": {\"model\": \"...\", \"route\": \"<provider>\", \"description\": \"cheap and fast\"}}. Optional per entry: description, instructions, toolsets, model, route, reasoning_effort. Names: lowercase letters, digits, - or _, up to 32 characters. Problems are listed by /subagents."}
+  models: {type: dict, default: {}, label: "Optional model presets", description: "Optional aliases/preferences, NOT an allowlist. Without a preset use model + provider directly: {\"flash\": {\"model\": \"...\", \"route\": \"<provider>\", \"description\": \"cheap and fast\"}}. Optional per entry: description, instructions, toolsets, model, route, reasoning_effort. Names: lowercase letters, digits, - or _, up to 32 characters. Problems are listed by /subagents."}
   teammates: {type: dict, default: {}, label: "Teammates (legacy name for Models)", description: "Upstream hermes-teammates name for the roster. Ignored when Models is set."}
   followup_mode: {type: str, default: "auto", label: "Follow-up mode", description: "auto: resume the same child conversation while the prompt cache is warm (prompt_caching.cache_ttl), otherwise send a digest of earlier results to a fresh child. resume: always resume when possible. digest: never resume. Anything else falls back to auto."}
   kanban: {type: bool, default: false, label: "Kanban lane", description: "Off by default. When on, subagent_spawn accepts kanban_task and finished runs hand their card to review."}
@@ -22,5 +22,5 @@ config_schema:
   followup_context_chars: {type: int, default: 8000, label: "Digest follow-up budget (characters)", description: "How much of earlier results a digest follow-up carries. 0-24000; anything else falls back to 8000."}
 # Catalog/schema bridge hints: subagent_spawn, subagent_followup, subagent_wait.
 # Hermes tool-search settings are global, not plugin settings.
-provides_tools: [subagent_spawn, subagent_followup, subagent_wait, subagent_steer, subagent_stop]
+provides_tools: [subagent_models, subagent_spawn, subagent_followup, subagent_wait, subagent_steer, subagent_stop]
 provides_hooks: [subagent_start, post_api_request]

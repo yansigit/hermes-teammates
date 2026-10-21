@@ -5,7 +5,7 @@ Guidance for AI coding agents, and for people, working in this repository.
 ## What this is
 
 hermes-subagents is a fork of [hermes-teammates](https://github.com/100yenadmin/hermes-teammates) 1.1.0. It gives
-the agent subagents on a model it picks by name from an operator-defined roster, and follow-ups that resume the same
+the agent subagents on exact model/provider IDs without roster registration, optional named presets, and follow-ups that resume the same
 child conversation on the same model, so the provider's prompt cache is reused. Spawns go through the public
 subagent lifecycle API; resumed follow-ups use Hermes internals, all in `teammates_resume.py`. A per-profile SQLite
 ledger records runs. The upstream Kanban lane is kept but off by default.

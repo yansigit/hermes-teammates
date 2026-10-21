@@ -7,7 +7,7 @@ def test_assign_refusal_order(rig):
     service, host = rig.service, rig.host
     host.spawn_paused = lambda: True
     assert service.assign(None, 'missing', '')['error'] == 'no_session'
-    assert service.assign('s', 'missing', '')['error'] == 'unknown_teammate'
+    assert service.assign('s', 'missing', '')['error'] == 'invalid_goal'
     for goal in ('', ' ', 'x' * 12001, None):
         assert service.assign('s', 'worker', goal)['error'] == 'invalid_goal'
     assert service.assign('s', 'worker', 'goal', kanban_task='missing')['error'] == 'spawn_paused'

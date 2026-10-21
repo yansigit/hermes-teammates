@@ -13,7 +13,8 @@ MIGRATIONS = {'stop_requested_at': 'REAL', 'stop_reason': 'TEXT',
               'role_hash': 'TEXT', 'tokens_input': 'INTEGER', 'tokens_output': 'INTEGER',
               'tokens_cache_read': 'INTEGER', 'tokens_cache_write': 'INTEGER', 'tokens_reasoning': 'INTEGER',
               # hermes-subagents: what a follow-up needs to resume this run's child conversation.
-              'parent_run_id': 'TEXT', 'followup_mode': 'TEXT', 'child_session_id': 'TEXT', 'launch_json': 'TEXT'}
+              'parent_run_id': 'TEXT', 'followup_mode': 'TEXT', 'child_session_id': 'TEXT', 'launch_json': 'TEXT',
+              'selection_json': 'TEXT'}
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS runs (
  run_id TEXT PRIMARY KEY, teammate TEXT NOT NULL, owner_session_id TEXT NOT NULL,

@@ -10,6 +10,9 @@ FOLLOWUP_MODES = ('auto', 'resume', 'digest')
 ROSTER_FILE = '_roster_file'  # read() -> parse(): the file the roster came from, and any problem reading it
 FIELDS = {'description', 'instructions', 'toolsets', 'model', 'route', 'reasoning_effort'}
 NAME = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
+MODEL_ID = re.compile(r'[^\s\x00-\x1f\x7f]{1,512}')
+# Native configured slugs preserve punctuation (e.g. custom:local-(gpu)); do not normalize IDs.
+PROVIDER_ID = re.compile(r'(?!.*://)[^\s\x00-\x1f\x7f-\x9f]{1,64}')
 # Bounded so that one explained teammate always fits the roster's reply budget.
 TOOLSET = re.compile(r'^[!-~]{1,48}$')
 MAX_TOOLSETS, MAX_LABEL = 24, 100

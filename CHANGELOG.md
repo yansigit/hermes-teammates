@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Direct `subagent_spawn(model, provider, ...)` accepts exact IDs without roster registration. Omitting provider
+  uses a matching optional preset or normal Hermes delegation/parent routing. Explicit provider never aliases.
+- New `subagent_models` discovers native Hermes provider/model catalogs on demand, with bounded search, exact
+  pagination and brief metadata when known. No startup catalog dump or model inference.
+- Resume and digest follow-ups keep recorded model/provider even if optional presets change or disappear. Digest
+  history follows the requested run chain and preserves toolset narrowing, including newly narrowed presets.
+- The ledger retains the initial preset definition; existing run rows remain readable.
+
 ## 2.0.0-dev: hermes-subagents (fork of hermes-teammates 1.1.0)
 
 - Renamed to `hermes-subagents`, with five tools: `subagent_spawn(model, ...)` picks a roster model by name,
